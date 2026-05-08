@@ -22,7 +22,7 @@ export interface LocalTranslationRequest {
   sourceText: string;
   sourceLang: string;
   targetLang: string;
-  contextBefore?: string;
+  contextBefore: string[];
 }
 
 export interface LocalTranslationResponse {

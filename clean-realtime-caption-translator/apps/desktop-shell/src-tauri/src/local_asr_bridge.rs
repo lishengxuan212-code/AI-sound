@@ -1,5 +1,6 @@
 use crate::audio_session::SessionKind;
 use crate::event_emitter::emit_session_event;
+use crate::diagnostics::diagnostic;
 use crate::local_translation_bridge::{translate_local, LocalTranslationRequest};
 use crate::settings::load_app_settings;
 use crate::tts_bridge::{synthesize_qwen_tts, TtsInvokeRequest};
@@ -153,13 +154,27 @@ fn emit_asr_text_message(app: &AppHandle, session_kind: SessionKind, session_id:
                 let source_lang = settings.local_translation.source_lang.clone();
                 let target_lang = settings.local_translation.target_lang.clone();
                 let request_id = uuid::Uuid::new_v4().to_string();
+                diagnostic(
+                    match session_kind {
+                        SessionKind::SystemSubtitle => "[SYS][TRANSLATION_PENDING]",
+                        SessionKind::MicInterpretation => "[MIC][TRANSLATION_PENDING]",
+                    },
+                    json!({
+                        "sessionKind": session_kind,
+                        "sessionId": session_id_for_task,
+                        "utteranceId": recognition_id,
+                        "translationId": request_id,
+                        "textLength": source_text.chars().count(),
+                        "translationStatus": "pending"
+                    }),
+                );
                 let response = translate_local(LocalTranslationRequest {
                     request_id: request_id.clone(),
                     session_kind,
                     source_text: source_text.clone(),
                     source_lang: source_lang.clone(),
                     target_lang: target_lang.clone(),
-                    context_before: None,
+                    context_before: Vec::new(),
                 })
             .await;
 
@@ -184,6 +199,21 @@ fn emit_asr_text_message(app: &AppHandle, session_kind: SessionKind, session_id:
                     "error": response.error,
                     "startedAt": chrono_like_now_ms(),
                     "completedAt": chrono_like_now_ms()
+                }),
+            );
+            diagnostic(
+                match session_kind {
+                    SessionKind::SystemSubtitle => "[SYS][TRANSLATION_FINAL]",
+                    SessionKind::MicInterpretation => "[MIC][TRANSLATION_FINAL]",
+                },
+                json!({
+                    "sessionKind": session_kind,
+                    "sessionId": session_id_for_task,
+                    "utteranceId": recognition_id,
+                    "translationId": request_id,
+                    "textLength": source_text.chars().count(),
+                    "translationStatus": response.status,
+                    "error": response.error
                 }),
             );
 
