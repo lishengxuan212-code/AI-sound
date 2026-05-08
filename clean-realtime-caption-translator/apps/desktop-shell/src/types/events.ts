@@ -14,6 +14,9 @@ export type SessionEventType =
   | 'mic_translation_status'
   | 'mic_translation_final'
   | 'mic_tts_status'
+  | 'mic_tts_playing'
+  | 'mic_tts_completed'
+  | 'mic_tts_error'
   | 'session_error'
   | 'audio_level';
 

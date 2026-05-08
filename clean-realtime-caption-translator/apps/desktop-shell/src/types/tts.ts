@@ -1,6 +1,6 @@
 import { SessionKind } from './events';
 
-export type TtsStatus = 'queued' | 'synthesizing' | 'playing' | 'completed' | 'failed';
+export type TtsStatus = 'queued' | 'synthesizing' | 'audio_saved' | 'playing' | 'completed' | 'failed';
 
 export interface TtsItem {
   id: string;
@@ -10,9 +10,11 @@ export interface TtsItem {
   model: 'qwen-qwen-tts-latest';
   voice: string;
   format: string;
+  sampleRate?: number;
   status: TtsStatus;
   audioPath?: string;
   audioUrl?: string;
+  fileSize?: number;
   error?: string;
   createdAt: number;
   completedAt?: number;

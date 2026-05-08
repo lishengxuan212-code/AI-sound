@@ -21,6 +21,7 @@ temp/
 __pycache__/
 tts-output/
 tts-audio/
+generated-audio/
 *.tmp
 
 local-asr/models/*

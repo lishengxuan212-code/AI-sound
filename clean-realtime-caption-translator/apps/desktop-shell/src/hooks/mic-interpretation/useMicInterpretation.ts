@@ -109,7 +109,17 @@ export function useMicInterpretation() {
     });
   }
 
-  function handleMicTtsStatus(ttsId: string, status: TtsStatus, error?: string, translationItemId?: string, audioPath?: string): void {
+  function handleMicTtsStatus(
+    ttsId: string,
+    status: TtsStatus,
+    error?: string,
+    translationItemId?: string,
+    audioPath?: string,
+    audioUrl?: string,
+    fileSize?: number,
+    sampleRate?: number,
+    format?: string,
+  ): void {
     let item = micInterpretationStore.ttsQueue.find((queued) => queued.id === ttsId);
     if (!item && translationItemId) {
       const translation = micInterpretationStore.translationQueue.find((queued) => queued.id === translationItemId);
@@ -130,9 +140,14 @@ export function useMicInterpretation() {
       item.status = status;
       item.error = error;
       item.audioPath = audioPath ?? item.audioPath;
+      item.audioUrl = audioUrl ?? item.audioUrl;
+      item.fileSize = fileSize ?? item.fileSize;
+      item.sampleRate = sampleRate ?? item.sampleRate;
+      item.format = format ?? item.format;
       if (status === 'completed' || status === 'failed') item.completedAt = nowMs();
     }
     micInterpretationStore.ttsStatus = status;
+    if (error) micInterpretationStore.errors.unshift(error);
     logDiagnostic('[MIC][TTS]', {
       sessionKind: SessionKind.MicInterpretation,
       ttsId,

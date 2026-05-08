@@ -222,6 +222,7 @@ fn emit_asr_text_message(app: &AppHandle, session_kind: SessionKind, session_id:
                     app_for_task,
                     TtsInvokeRequest {
                         session_kind: SessionKind::MicInterpretation,
+                        tts_id: uuid::Uuid::new_v4().to_string(),
                         translation_item_id: request_id,
                         text: response.translated_text,
                         target_lang,
