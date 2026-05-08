@@ -1,0 +1,26 @@
+[package]
+name = "ai-sound-desktop-shell"
+version = "0.1.0"
+description = "Clean realtime caption translator desktop shell"
+authors = ["AI Sound"]
+edition = "2021"
+
+[lib]
+name = "ai_sound_desktop_shell_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.2.0", features = [] }
+
+[dependencies]
+anyhow = "1.0"
+cpal = "0.15"
+futures-util = "0.3"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "2.5.0", features = [] }
+tokio = { version = "1.44", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+url = "2.5"
+uuid = { version = "1.15", features = ["v4"] }

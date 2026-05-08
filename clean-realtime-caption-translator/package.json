@@ -1,0 +1,15 @@
+{
+  "name": "clean-realtime-caption-translator",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Windows desktop realtime caption translation and microphone interpretation MVP.",
+  "packageManager": "pnpm@9.12.2",
+  "scripts": {
+    "dev": "pnpm --filter @ai-sound/desktop-shell dev",
+    "build": "pnpm --filter @ai-sound/desktop-shell build",
+    "test": "pnpm --filter @ai-sound/desktop-shell test",
+    "typecheck": "pnpm --filter @ai-sound/desktop-shell typecheck",
+    "tauri:dev": "pnpm --filter @ai-sound/desktop-shell tauri:dev",
+    "tauri:build": "pnpm --filter @ai-sound/desktop-shell tauri:build"
+  }
+}
