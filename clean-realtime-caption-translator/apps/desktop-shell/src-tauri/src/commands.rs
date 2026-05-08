@@ -2,7 +2,7 @@ use crate::audio_session::{SessionKind, SessionRegistry};
 use crate::mic_interpretation_session::start_mic_interpretation_session;
 use crate::settings::{load_app_settings, AppSettings};
 use crate::system_subtitle_session::start_system_subtitle_session;
-use crate::tts_bridge::{synthesize_qwen_tts, TtsInvokeRequest};
+use crate::tts_bridge::{retry_tts_playback, synthesize_qwen_tts, RetryTtsPlaybackRequest, TtsInvokeRequest};
 use tauri::{AppHandle, State};
 
 #[tauri::command(rename_all = "camelCase")]
@@ -31,4 +31,9 @@ pub async fn stop_session(registry: State<'_, SessionRegistry>, session_kind: Se
 #[tauri::command(rename_all = "camelCase")]
 pub async fn synthesize_tts(app: AppHandle, request: TtsInvokeRequest) -> Result<(), String> {
     synthesize_qwen_tts(app, request).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn retry_tts(app: AppHandle, request: RetryTtsPlaybackRequest) -> Result<(), String> {
+    retry_tts_playback(app, request).await
 }

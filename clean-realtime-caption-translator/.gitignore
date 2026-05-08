@@ -5,6 +5,7 @@ target/
 .venv/
 venv/
 .venv-local-asr/
+.venv-local-translation/
 .DS_Store
 
 .env

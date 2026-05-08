@@ -20,6 +20,7 @@ export async function bindMicInterpretationEvents(): Promise<() => void> {
         String(body.status) as TtsStatus,
         body.error ? String(body.error) : undefined,
         body.translationItemId ? String(body.translationItemId) : undefined,
+        body.audioPath ? String(body.audioPath) : undefined,
       );
     }
   });

@@ -1,5 +1,6 @@
 use serde::Serialize;
 use std::env;
+use std::sync::OnceLock;
 
 #[derive(Debug, Serialize)]
 pub struct LocalAsrSettings {
@@ -55,7 +56,15 @@ pub struct AppSettings {
 }
 
 fn env_or(name: &str, fallback: &str) -> String {
+    load_dotenv_once();
     env::var(name).unwrap_or_else(|_| fallback.to_string())
+}
+
+fn load_dotenv_once() {
+    static DOTENV: OnceLock<()> = OnceLock::new();
+    DOTENV.get_or_init(|| {
+        let _ = dotenvy::dotenv();
+    });
 }
 
 pub fn load_app_settings() -> AppSettings {
@@ -99,6 +108,7 @@ pub fn load_app_settings() -> AppSettings {
 }
 
 pub fn tts_api_key() -> Option<String> {
+    load_dotenv_once();
     env::var("GAME_TTS_API_KEY")
         .ok()
         .filter(|value| !value.is_empty())

@@ -11,3 +11,13 @@ export interface QwenTtsInvokeRequest {
 export function synthesizeQwenTts(request: QwenTtsInvokeRequest): Promise<void> {
   return invoke('synthesize_tts', { request });
 }
+
+export interface RetryTtsRequest {
+  ttsId: string;
+  translationItemId: string;
+  audioPath: string;
+}
+
+export function retryTtsPlayback(request: RetryTtsRequest): Promise<void> {
+  return invoke('retry_tts', { request });
+}

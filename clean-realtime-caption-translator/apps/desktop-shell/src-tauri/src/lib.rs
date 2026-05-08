@@ -12,7 +12,7 @@ mod system_subtitle_session;
 mod tts_bridge;
 mod vad_pipeline;
 
-use commands::{load_settings, start_session, stop_session, synthesize_tts};
+use commands::{load_settings, retry_tts, start_session, stop_session, synthesize_tts};
 
 pub fn run() {
     tauri::Builder::default()
@@ -21,7 +21,8 @@ pub fn run() {
             load_settings,
             start_session,
             stop_session,
-            synthesize_tts
+            synthesize_tts,
+            retry_tts
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

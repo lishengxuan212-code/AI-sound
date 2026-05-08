@@ -108,7 +108,7 @@ export function useMicInterpretation() {
     });
   }
 
-  function handleMicTtsStatus(ttsId: string, status: TtsStatus, error?: string, translationItemId?: string): void {
+  function handleMicTtsStatus(ttsId: string, status: TtsStatus, error?: string, translationItemId?: string, audioPath?: string): void {
     let item = micInterpretationStore.ttsQueue.find((queued) => queued.id === ttsId);
     if (!item && translationItemId) {
       const translation = micInterpretationStore.translationQueue.find((queued) => queued.id === translationItemId);
@@ -128,6 +128,7 @@ export function useMicInterpretation() {
     if (item) {
       item.status = status;
       item.error = error;
+      item.audioPath = audioPath ?? item.audioPath;
       if (status === 'completed' || status === 'failed') item.completedAt = nowMs();
     }
     micInterpretationStore.ttsStatus = status;
