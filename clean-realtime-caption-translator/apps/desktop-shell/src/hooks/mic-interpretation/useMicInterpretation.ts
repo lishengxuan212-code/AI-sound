@@ -85,6 +85,7 @@ export function useMicInterpretation() {
     item.completedAt = nowMs();
     const existing = micInterpretationStore.translationQueue.find((queued) => queued.id === item.id);
     if (existing) Object.assign(existing, item);
+    if (item.error) micInterpretationStore.errors.unshift(item.error);
     if (!item.translatedText) return;
     micInterpretationStore.currentTranslatedText = item.translatedText;
     const ttsItem: TtsItem = {

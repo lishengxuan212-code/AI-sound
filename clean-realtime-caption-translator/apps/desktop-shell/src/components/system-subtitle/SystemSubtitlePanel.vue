@@ -4,6 +4,7 @@ import SystemCaptionHistory from './SystemCaptionHistory.vue';
 import SystemSubtitleSettings from './SystemSubtitleSettings.vue';
 import StatusBadge from '../shared/StatusBadge.vue';
 import AudioLevelMeter from '../shared/AudioLevelMeter.vue';
+import ErrorBanner from '../shared/ErrorBanner.vue';
 import { useSystemSubtitle } from '../../hooks/system-subtitle/useSystemSubtitle';
 
 const system = useSystemSubtitle();
@@ -26,6 +27,7 @@ const system = useSystemSubtitle();
     </div>
 
     <AudioLevelMeter :value="system.store.audioLevel" />
+    <ErrorBanner v-if="system.store.errors[0]" :message="system.store.errors[0]" />
     <SystemCaptionDisplay />
     <SystemSubtitleSettings />
     <SystemCaptionHistory />

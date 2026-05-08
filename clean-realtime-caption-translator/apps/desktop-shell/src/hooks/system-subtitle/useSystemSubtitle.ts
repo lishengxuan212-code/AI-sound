@@ -93,6 +93,7 @@ export function useSystemSubtitle() {
     item.completedAt = nowMs();
     const existing = systemSubtitleStore.translationQueue.find((queued) => queued.id === item.id);
     if (existing) Object.assign(existing, item);
+    if (item.error) systemSubtitleStore.errors.unshift(item.error);
     systemSubtitleStore.currentTranslatedCaption = item.translatedText || systemSubtitleStore.currentTranslatedCaption;
     if (systemSubtitleStore.openVisualSegment && item.translatedText) {
       systemSubtitleStore.openVisualSegment.translatedText = item.translatedText;
