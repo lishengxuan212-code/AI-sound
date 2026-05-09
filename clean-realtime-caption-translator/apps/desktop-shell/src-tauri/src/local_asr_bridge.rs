@@ -25,6 +25,7 @@ const ASR_SAMPLE_RATE: u32 = 16_000;
 const ASR_CHUNK_SAMPLES: usize = 1_600;
 const VOICE_RMS_THRESHOLD: f32 = 400.0 / i16::MAX as f32;
 const FORCE_FINALIZE_MS: u64 = 3_500;
+const MIC_MIN_SILENCE_FOR_TRANSLATE_MS: u32 = 800;
 const TRANSLATION_CONTEXT_SENTENCES: usize = 4;
 
 #[derive(Debug, Clone, Copy)]
@@ -292,9 +293,25 @@ async fn emit_asr_text_message(
         }),
     );
     let source_lang = configured_source_lang(session_kind);
-    let visible_transcript = {
+    let record_accepted = {
         let mut state = speech_state.lock().await;
-        state.record_asr(&parsed);
+        state.record_asr(&parsed, session_kind == SessionKind::MicInterpretation)
+    };
+    if !record_accepted && session_kind == SessionKind::MicInterpretation {
+        diagnostic(
+            "[MIC][ASR_PARTIAL]",
+            json!({
+                "sessionKind": session_kind,
+                "sessionId": session_id,
+                "utteranceId": utterance_id,
+                "rawTextLength": transcript.chars().count(),
+                "finalizeReason": "completed_history_replay_ignored"
+            }),
+        );
+        return Ok(());
+    }
+    let visible_transcript = {
+        let state = speech_state.lock().await;
         state.combined_text()
     };
     if !visible_transcript.trim().is_empty() {
@@ -353,10 +370,13 @@ impl SpeechSegmentState {
         }
     }
 
-    fn record_asr(&mut self, parsed: &ParsedAsrMessage) {
+    fn record_asr(&mut self, parsed: &ParsedAsrMessage, suppress_completed_replay: bool) -> bool {
         let text = trim_completed_prefix(parsed.transcript.trim(), &self.completed_prefix);
         if text.is_empty() {
-            return;
+            return false;
+        }
+        if suppress_completed_replay && is_completed_text_replay(&text, &self.completed_prefix) {
+            return false;
         }
         self.last_text_at = Some(Instant::now());
         if self.segment_started_at.is_none() {
@@ -370,6 +390,7 @@ impl SpeechSegmentState {
         } else {
             self.partial_text = text;
         }
+        true
     }
 
     fn should_finalize(
@@ -382,23 +403,37 @@ impl SpeechSegmentState {
         }
         let combined = self.combined_text();
         let readable_len = readable_len(&combined, &config.source_lang);
-        if readable_len >= config.hard_chars.max(config.preferred_chars) {
+        if config.allow_length_finalize
+            && readable_len >= config.hard_chars.max(config.preferred_chars)
+        {
             return Some("hard_length_limit");
         }
-        if self
-            .segment_started_at
-            .map(|started| now.duration_since(started) >= Duration::from_millis(FORCE_FINALIZE_MS))
-            .unwrap_or(false)
-        {
-            return Some("force_timeout");
+        if let Some(force_finalize_ms) = config.force_finalize_ms {
+            if self
+                .segment_started_at
+                .map(|started| {
+                    now.duration_since(started) >= Duration::from_millis(force_finalize_ms)
+                })
+                .unwrap_or(false)
+            {
+                return Some("force_timeout");
+            }
         }
-        if readable_len >= config.preferred_chars && has_semantic_boundary(&combined) {
+        if config.allow_length_finalize
+            && readable_len >= config.preferred_chars
+            && has_semantic_boundary(&combined)
+        {
             return Some("semantic_length_boundary");
         }
         let Some(started_at) = self.segment_started_at else {
             return None;
         };
-        if now.duration_since(started_at)
+        let silence_anchor = if config.require_recent_activity_silence {
+            latest_instant(self.last_voice_at, self.last_text_at).unwrap_or(started_at)
+        } else {
+            started_at
+        };
+        if now.duration_since(silence_anchor)
             >= Duration::from_millis(u64::from(config.silence_ms + config.tail_delay_ms))
         {
             Some("interval")
@@ -407,7 +442,11 @@ impl SpeechSegmentState {
         }
     }
 
-    fn take_segment(&mut self, finalize_reason: &'static str) -> Option<PendingSpeechSegment> {
+    fn take_segment(
+        &mut self,
+        finalize_reason: &'static str,
+        include_context_before: bool,
+    ) -> Option<PendingSpeechSegment> {
         let text = self.combined_text();
         if text.trim().is_empty() {
             return None;
@@ -422,7 +461,11 @@ impl SpeechSegmentState {
             },
             source_text: text,
             finalize_reason,
-            context_before: self.context_before(TRANSLATION_CONTEXT_SENTENCES),
+            context_before: if include_context_before {
+                self.context_before(TRANSLATION_CONTEXT_SENTENCES)
+            } else {
+                Vec::new()
+            },
         };
         self.committed_text.clear();
         self.partial_text.clear();
@@ -485,6 +528,10 @@ struct SegmentFinalizeConfig {
     preferred_chars: u32,
     hard_chars: u32,
     source_lang: String,
+    require_recent_activity_silence: bool,
+    allow_length_finalize: bool,
+    force_finalize_ms: Option<u64>,
+    include_context_before: bool,
 }
 
 async fn run_silence_finalizer(
@@ -501,9 +548,9 @@ async fn run_silence_finalizer(
             let mut state = speech_state.lock().await;
             let finalize_config = segment_finalize_config(session_kind);
             if let Some(finalize_reason) = state.should_finalize(Instant::now(), &finalize_config) {
-                state.take_segment(finalize_reason)
+                state.take_segment(finalize_reason, finalize_config.include_context_before)
             } else if should_stop && !state.combined_text().trim().is_empty() {
-                state.take_segment("session_stop")
+                state.take_segment("session_stop", finalize_config.include_context_before)
             } else {
                 None
             }
@@ -541,17 +588,34 @@ fn segment_finalize_config(session_kind: SessionKind) -> SegmentFinalizeConfig {
             preferred_chars: readable_limit_for_lang(&settings.language.system_source_lang),
             hard_chars: settings.system_segmenter.hard_max_chars,
             source_lang: settings.language.system_source_lang.clone(),
+            require_recent_activity_silence: false,
+            allow_length_finalize: true,
+            force_finalize_ms: Some(FORCE_FINALIZE_MS),
+            include_context_before: true,
         },
         SessionKind::MicInterpretation => SegmentFinalizeConfig {
             silence_ms: settings
                 .mic_segmenter
                 .silence_for_translate_ms
-                .clamp(200, 5_000),
+                .clamp(MIC_MIN_SILENCE_FOR_TRANSLATE_MS, 8_000),
             tail_delay_ms: 0,
             preferred_chars: readable_limit_for_lang(&settings.language.mic_source_lang),
             hard_chars: settings.mic_segmenter.hard_max_chars,
             source_lang: settings.language.mic_source_lang.clone(),
+            require_recent_activity_silence: true,
+            allow_length_finalize: false,
+            force_finalize_ms: None,
+            include_context_before: false,
         },
+    }
+}
+
+fn latest_instant(left: Option<Instant>, right: Option<Instant>) -> Option<Instant> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
     }
 }
 
@@ -584,6 +648,21 @@ async fn translate_final_segment(
     ) else {
         return;
     };
+    if session_kind == SessionKind::MicInterpretation
+        && is_incomplete_mic_fragment(&source_text, &source_lang)
+    {
+        diagnostic(
+            "[MIC][ASR_FINAL]",
+            json!({
+                "sessionKind": session_kind,
+                "sessionId": session_id,
+                "utteranceId": utterance_id,
+                "rawTextLength": source_text.chars().count(),
+                "finalizeReason": "mic_fragment_ignored_before_translation"
+            }),
+        );
+        return;
+    }
     update_raw_transcript(session_kind, session_id, &utterance_id, &source_text);
 
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -901,6 +980,68 @@ fn trim_completed_prefix(text: &str, completed_prefix: &str) -> String {
     text.to_string()
 }
 
+fn is_completed_text_replay(text: &str, completed_prefix: &str) -> bool {
+    let text = normalize_replay_text(text);
+    let completed = normalize_replay_text(completed_prefix);
+    if text.is_empty() || completed.is_empty() {
+        return false;
+    }
+    if completed == text || completed.contains(&text) {
+        return true;
+    }
+    let text_words: Vec<&str> = text.split_whitespace().collect();
+    let completed_words: Vec<&str> = completed.split_whitespace().collect();
+    text_words.len() >= 2
+        && text_words.len() < completed_words.len()
+        && completed_words
+            .windows(text_words.len())
+            .any(|window| window == text_words.as_slice())
+}
+
+fn is_incomplete_mic_fragment(text: &str, source_lang: &str) -> bool {
+    let normalized = normalize_replay_text(text);
+    if normalized.is_empty() {
+        return true;
+    }
+    match normalize_lang(source_lang) {
+        "en" => {
+            let words: Vec<&str> = normalized.split_whitespace().collect();
+            let latin_chars = normalized
+                .chars()
+                .filter(|ch| ch.is_ascii_alphabetic())
+                .count();
+            let all_single_letter_words = words
+                .iter()
+                .all(|word| word.chars().filter(|ch| ch.is_ascii_alphabetic()).count() <= 1);
+            latin_chars < 2 || (words.len() >= 2 && all_single_letter_words && latin_chars < 4)
+        }
+        "zh" => {
+            let cjk_chars = text
+                .chars()
+                .filter(|ch| ('\u{4e00}'..='\u{9fff}').contains(ch))
+                .count();
+            cjk_chars == 0 && normalized.chars().filter(|ch| ch.is_alphanumeric()).count() < 2
+        }
+        _ => normalized.chars().filter(|ch| ch.is_alphanumeric()).count() < 2,
+    }
+}
+
+fn normalize_replay_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || ('\u{4e00}'..='\u{9fff}').contains(&ch) {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn pcm16_has_voice(chunk: &[u8]) -> bool {
     if chunk.len() < 2 {
         return false;
@@ -1015,6 +1156,23 @@ fn build_audio_stream(
     let stream_config: cpal::StreamConfig = config.clone().into();
     let source_sample_rate = stream_config.sample_rate.0;
     let channels = usize::from(stream_config.channels);
+    let selected_device_name = device.name().unwrap_or_else(|_| "unknown".to_string());
+    diagnostic(
+        match source {
+            AudioCaptureSource::Microphone => "[MIC][AUDIO]",
+            AudioCaptureSource::SystemLoopback => "[SYS][AUDIO]",
+        },
+        json!({
+            "event.type": "audio_input_device_selected",
+            "source": match source {
+                AudioCaptureSource::Microphone => "microphone",
+                AudioCaptureSource::SystemLoopback => "system_loopback",
+            },
+            "deviceName": selected_device_name,
+            "sourceSampleRate": source_sample_rate,
+            "channels": channels
+        }),
+    );
     let err_fn = |error| eprintln!("[MIC][AUDIO] input stream error: {}", error);
 
     let stream = match config.sample_format() {
@@ -1236,6 +1394,25 @@ fn selected_input_device(host: &cpal::Host, configured_name: &str) -> Option<cpa
             }
         }
     }
+    if let Some(default_device) = host.default_input_device() {
+        if default_device
+            .name()
+            .ok()
+            .is_some_and(|name| !is_virtual_cable_capture_device(&name))
+        {
+            return Some(default_device);
+        }
+    }
+    if let Ok(mut devices) = host.input_devices() {
+        if let Some(device) = devices.find(|device| {
+            device
+                .name()
+                .ok()
+                .is_some_and(|name| !is_virtual_cable_capture_device(&name))
+        }) {
+            return Some(device);
+        }
+    }
     host.default_input_device()
 }
 
@@ -1251,6 +1428,35 @@ fn selected_output_device(host: &cpal::Host, configured_name: &str) -> Option<cp
         }
     }
     host.default_output_device()
+}
+
+#[cfg(test)]
+fn selected_input_device_name_from_candidates(
+    configured_name: &str,
+    default_name: Option<&str>,
+    candidate_names: &[&str],
+) -> Option<String> {
+    let configured = configured_name.trim();
+    if !configured.is_empty() && candidate_names.iter().any(|name| *name == configured) {
+        return Some(configured.to_string());
+    }
+    if let Some(default_name) = default_name {
+        if !is_virtual_cable_capture_device(default_name) {
+            return Some(default_name.to_string());
+        }
+    }
+    candidate_names
+        .iter()
+        .find(|name| !is_virtual_cable_capture_device(name))
+        .map(|name| (*name).to_string())
+        .or_else(|| default_name.map(ToString::to_string))
+}
+
+fn is_virtual_cable_capture_device(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    normalized.contains("cable output")
+        || normalized.contains("vb-audio virtual cable")
+        || normalized.contains("vb-cable")
 }
 
 struct AsrPcmChunker {
@@ -1344,8 +1550,9 @@ fn i16_to_le_bytes(samples: &[i16]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        filter_source_text_by_expected_lang, parse_asr_message, AsrPcmChunker,
-        SegmentFinalizeConfig, SpeechSegmentState, ASR_CHUNK_SAMPLES, ASR_SAMPLE_RATE,
+        filter_source_text_by_expected_lang, parse_asr_message, segment_finalize_config,
+        AsrPcmChunker, SegmentFinalizeConfig, SpeechSegmentState, ASR_CHUNK_SAMPLES,
+        ASR_SAMPLE_RATE,
     };
     use crate::audio_session::SessionKind;
     use tokio::sync::mpsc;
@@ -1401,6 +1608,10 @@ mod tests {
             preferred_chars: 60,
             hard_chars: 220,
             source_lang: "en".to_string(),
+            require_recent_activity_silence: false,
+            allow_length_finalize: true,
+            force_finalize_ms: Some(3_500),
+            include_context_before: true,
         };
 
         assert_eq!(state.should_finalize(now, &config), Some("interval"));
@@ -1434,8 +1645,192 @@ mod tests {
             preferred_chars: 60,
             hard_chars: 220,
             source_lang: "en".to_string(),
+            require_recent_activity_silence: false,
+            allow_length_finalize: true,
+            force_finalize_ms: Some(3_500),
+            include_context_before: true,
         };
 
         assert_eq!(state.should_finalize(now, &config), None);
+    }
+
+    #[test]
+    fn completed_phrase_replay_is_ignored_when_asr_repeats_history() {
+        let mut state = SpeechSegmentState::default();
+        state.completed_prefix = "can you hear me".to_string();
+        let parsed = super::ParsedAsrMessage {
+            utterance_id: "utt-replay".to_string(),
+            transcript: "you hear".to_string(),
+            is_final: false,
+            provider: "local-asr".to_string(),
+        };
+
+        let accepted = state.record_asr(&parsed, true);
+
+        assert!(!accepted);
+        assert_eq!(state.combined_text(), "");
+    }
+
+    #[test]
+    fn completed_phrase_replay_is_ignored_when_asr_repeats_full_history() {
+        let mut state = SpeechSegmentState::default();
+        state.completed_prefix = "can you hear me".to_string();
+        let parsed = super::ParsedAsrMessage {
+            utterance_id: "utt-replay".to_string(),
+            transcript: "can you hear me".to_string(),
+            is_final: true,
+            provider: "local-asr".to_string(),
+        };
+
+        let accepted = state.record_asr(&parsed, true);
+
+        assert!(!accepted);
+        assert_eq!(state.combined_text(), "");
+    }
+
+    #[test]
+    fn mic_pending_segment_does_not_carry_history_context() {
+        let mut state = SpeechSegmentState::default();
+        state
+            .context_history
+            .push_back("can you hear me".to_string());
+        state.partial_text = "hello there".to_string();
+
+        let pending = state
+            .take_segment("interval", false)
+            .expect("pending segment");
+
+        assert!(pending.context_before.is_empty());
+    }
+
+    #[test]
+    fn mic_rejects_incomplete_latin_letter_fragment_before_translation() {
+        assert!(super::is_incomplete_mic_fragment("i k", "en"));
+        assert!(!super::is_incomplete_mic_fragment("ok", "en"));
+        assert!(!super::is_incomplete_mic_fragment("can you hear me", "en"));
+    }
+
+    #[test]
+    fn mic_finalize_config_allows_800ms_silence() {
+        let config = segment_finalize_config(SessionKind::MicInterpretation);
+
+        assert_eq!(config.silence_ms, 800);
+    }
+
+    #[test]
+    fn mic_finalize_waits_for_silence_after_latest_voice_or_text() {
+        let now = Instant::now();
+        let mut state = SpeechSegmentState::default();
+        state.partial_text = "我还没有说完".to_string();
+        state.segment_started_at = Some(now - Duration::from_millis(3_000));
+        state.last_voice_at = Some(now - Duration::from_millis(200));
+        state.last_text_at = Some(now - Duration::from_millis(100));
+
+        let config = SegmentFinalizeConfig {
+            silence_ms: 800,
+            tail_delay_ms: 0,
+            preferred_chars: 16,
+            hard_chars: 140,
+            source_lang: "zh".to_string(),
+            require_recent_activity_silence: true,
+            allow_length_finalize: false,
+            force_finalize_ms: None,
+            include_context_before: false,
+        };
+
+        assert_eq!(state.should_finalize(now, &config), None);
+    }
+
+    #[test]
+    fn mic_finalize_after_clear_pause() {
+        let now = Instant::now();
+        let mut state = SpeechSegmentState::default();
+        state.partial_text = "我已经说完了".to_string();
+        state.segment_started_at = Some(now - Duration::from_millis(5_000));
+        state.last_voice_at = Some(now - Duration::from_millis(900));
+        state.last_text_at = Some(now - Duration::from_millis(850));
+
+        let config = SegmentFinalizeConfig {
+            silence_ms: 800,
+            tail_delay_ms: 0,
+            preferred_chars: 16,
+            hard_chars: 140,
+            source_lang: "zh".to_string(),
+            require_recent_activity_silence: true,
+            allow_length_finalize: false,
+            force_finalize_ms: None,
+            include_context_before: false,
+        };
+
+        assert_eq!(state.should_finalize(now, &config), Some("interval"));
+    }
+
+    #[test]
+    fn mic_does_not_force_finalize_while_speaker_continues() {
+        let now = Instant::now();
+        let mut state = SpeechSegmentState::default();
+        state.partial_text = "这是一个比较长但是还没说完的句子".to_string();
+        state.segment_started_at = Some(now - Duration::from_millis(10_000));
+        state.last_voice_at = Some(now);
+        state.last_text_at = Some(now);
+
+        let config = SegmentFinalizeConfig {
+            silence_ms: 800,
+            tail_delay_ms: 0,
+            preferred_chars: 16,
+            hard_chars: 16,
+            source_lang: "zh".to_string(),
+            require_recent_activity_silence: true,
+            allow_length_finalize: false,
+            force_finalize_ms: None,
+            include_context_before: false,
+        };
+
+        assert_eq!(state.should_finalize(now, &config), None);
+    }
+
+    #[test]
+    fn detects_virtual_cable_capture_devices_for_auto_mic_selection() {
+        assert!(super::is_virtual_cable_capture_device(
+            "CABLE Output (VB-Audio Virtual Cable)"
+        ));
+        assert!(!super::is_virtual_cable_capture_device(
+            "Microphone Array (Realtek Audio)"
+        ));
+    }
+
+    #[test]
+    fn auto_mic_selection_prefers_default_real_microphone() {
+        let selected = super::selected_input_device_name_from_candidates(
+            "",
+            Some("Microphone Array (Realtek Audio)"),
+            &[
+                "Line In (Unused Device)",
+                "Microphone Array (Realtek Audio)",
+                "CABLE Output (VB-Audio Virtual Cable)",
+            ],
+        );
+
+        assert_eq!(
+            selected.as_deref(),
+            Some("Microphone Array (Realtek Audio)")
+        );
+    }
+
+    #[test]
+    fn auto_mic_selection_falls_back_when_default_is_virtual_cable() {
+        let selected = super::selected_input_device_name_from_candidates(
+            "",
+            Some("CABLE Output (VB-Audio Virtual Cable)"),
+            &[
+                "CABLE Output (VB-Audio Virtual Cable)",
+                "Microphone Array (Realtek Audio)",
+            ],
+        );
+
+        assert_eq!(
+            selected.as_deref(),
+            Some("Microphone Array (Realtek Audio)")
+        );
     }
 }

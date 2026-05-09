@@ -47,6 +47,9 @@ pub fn update_raw_transcript(
                 snapshot.system_raw_transcript = text.to_string();
             }
             SessionKind::MicInterpretation => {
+                if snapshot.mic_utterance_id != utterance_id {
+                    snapshot.mic_translated_text.clear();
+                }
                 snapshot.mic_session_id = session_id.to_string();
                 snapshot.mic_utterance_id = utterance_id.to_string();
                 snapshot.mic_raw_transcript = text.to_string();
@@ -88,4 +91,31 @@ fn now_ms() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{get_realtime_caption_snapshot, update_raw_transcript, update_translated_text};
+    use crate::audio_session::SessionKind;
+
+    #[test]
+    fn mic_raw_transcript_for_new_utterance_clears_previous_mic_translation() {
+        update_translated_text(
+            SessionKind::MicInterpretation,
+            "mic-session",
+            "mic-old",
+            "old",
+        );
+        update_raw_transcript(
+            SessionKind::MicInterpretation,
+            "mic-session",
+            "mic-new",
+            "new",
+        );
+
+        let snapshot = get_realtime_caption_snapshot();
+
+        assert_eq!(snapshot.mic_raw_transcript, "new");
+        assert_eq!(snapshot.mic_translated_text, "");
+    }
 }

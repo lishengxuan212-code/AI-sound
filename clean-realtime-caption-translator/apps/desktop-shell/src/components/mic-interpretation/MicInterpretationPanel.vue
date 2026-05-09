@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import MicTranscriptDisplay from './MicTranscriptDisplay.vue';
-import MicTranslationDisplay from './MicTranslationDisplay.vue';
-import MicTtsStatus from './MicTtsStatus.vue';
+import MicCaptionDisplay from './MicCaptionDisplay.vue';
+import MicInterpretationHistory from './MicInterpretationHistory.vue';
 import MicInterpretationSettings from './MicInterpretationSettings.vue';
 import StatusBadge from '../shared/StatusBadge.vue';
 import AudioLevelMeter from '../shared/AudioLevelMeter.vue';
@@ -31,8 +30,7 @@ const mic = useMicInterpretation();
     <AudioLevelMeter :value="mic.store.audioLevel" />
     <ErrorBanner v-if="mic.store.errors[0]" :message="mic.store.errors[0]" />
     <MicInterpretationSettings />
-    <MicTranscriptDisplay />
-    <MicTranslationDisplay />
-    <MicTtsStatus />
+    <MicCaptionDisplay />
+    <MicInterpretationHistory />
   </article>
 </template>

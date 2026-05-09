@@ -59,6 +59,13 @@ pub struct QwenTtsSettings {
     pub game_tts_api_key_configured: bool,
     #[serde(rename = "dashscopeApiKeyConfigured")]
     pub dashscope_api_key_configured: bool,
+    #[serde(rename = "outputMode", default = "default_tts_output_mode")]
+    pub output_mode: String,
+    #[serde(
+        rename = "virtualMicDeviceName",
+        default = "default_tts_virtual_mic_device"
+    )]
+    pub virtual_mic_device_name: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -185,6 +192,17 @@ fn default_audio_devices() -> AudioDeviceSettings {
     }
 }
 
+fn default_tts_output_mode() -> String {
+    env_or("GAME_TTS_OUTPUT_MODE", "virtual_mic_only")
+}
+
+fn default_tts_virtual_mic_device() -> String {
+    env_or(
+        "GAME_TTS_VIRTUAL_MIC_DEVICE",
+        "CABLE Input (VB-Audio Virtual Cable)",
+    )
+}
+
 fn load_dotenv_once() {
     static DOTENV: OnceLock<()> = OnceLock::new();
     DOTENV.get_or_init(|| {
@@ -264,7 +282,7 @@ pub fn default_app_settings() -> AppSettings {
         qwen_tts: QwenTtsSettings {
             endpoint: env_or(
                 "GAME_TTS_API_ENDPOINT",
-                "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer",
+                "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
             ),
             api_key: env::var("GAME_TTS_API_KEY")
                 .ok()
@@ -275,9 +293,9 @@ pub fn default_app_settings() -> AppSettings {
                         .filter(|value| !value.is_empty())
                 })
                 .unwrap_or_default(),
-            model: env_or("GAME_TTS_API_MODEL", "qwen-qwen-tts-latest"),
-            voice: env_or("GAME_TTS_API_VOICE", ""),
-            format: env_or("GAME_TTS_API_FORMAT", "wav"),
+            model: env_or("GAME_TTS_API_MODEL", "qwen3-tts-flash"),
+            voice: env_or("GAME_TTS_API_VOICE", "Cherry"),
+            format: env_or("GAME_TTS_API_FORMAT", "mp3"),
             sample_rate: env_or("GAME_TTS_API_SAMPLE_RATE", "24000")
                 .parse()
                 .unwrap_or(24000),
@@ -286,6 +304,8 @@ pub fn default_app_settings() -> AppSettings {
             has_api_key,
             game_tts_api_key_configured: secret_status.game_tts_api_key_configured,
             dashscope_api_key_configured: secret_status.dashscope_api_key_configured,
+            output_mode: default_tts_output_mode(),
+            virtual_mic_device_name: default_tts_virtual_mic_device(),
         },
         audio_devices: AudioDeviceSettings {
             system_output_device_name: env_or("SYSTEM_AUDIO_OUTPUT_DEVICE", ""),
@@ -334,7 +354,11 @@ pub fn load_app_settings() -> AppSettings {
     let mut settings = preferred
         .as_ref()
         .and_then(|path| fs::read_to_string(path).ok())
-        .or_else(|| legacy.as_ref().and_then(|path| fs::read_to_string(path).ok()))
+        .or_else(|| {
+            legacy
+                .as_ref()
+                .and_then(|path| fs::read_to_string(path).ok())
+        })
         .and_then(|text| serde_json::from_str::<AppSettings>(&text).ok())
         .unwrap_or_else(default_app_settings);
     refresh_secret_status(&mut settings);
@@ -414,4 +438,94 @@ pub fn tts_api_key() -> Option<String> {
                 .ok()
                 .filter(|value| !value.is_empty())
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppSettings;
+
+    #[test]
+    fn deserializes_legacy_settings_with_default_tts_virtual_mic_route() {
+        let text = r#"{
+          "localAsr": {
+            "provider": "vosk",
+            "wsUrl": "ws://127.0.0.1:8765/ws",
+            "modelDir": "local-asr\\models\\vosk-model-small-en-us-0.15",
+            "sampleRate": 16000,
+            "languageMode": "bilingual",
+            "enableEndpointDetection": true
+          },
+          "localTranslation": {
+            "provider": "dashscope_openai",
+            "endpoint": "https://example.test/v1/chat/completions",
+            "apiKey": "",
+            "proxyUrl": "",
+            "prompt": "",
+            "modelPath": "",
+            "modelName": "qwen-mt-flash",
+            "sourceLang": "en",
+            "targetLang": "zh",
+            "timeoutMs": 15000
+          },
+          "qwenTts": {
+            "endpoint": "https://example.test/tts",
+            "apiKey": "",
+            "model": "qwen3-tts-flash",
+            "voice": "Cherry",
+            "format": "mp3",
+            "sampleRate": 24000,
+            "speed": 1.0,
+            "volume": 50,
+            "hasApiKey": false,
+            "gameTtsApiKeyConfigured": false,
+            "dashscopeApiKeyConfigured": false
+          },
+          "audioDevices": {
+            "systemOutputDeviceName": "",
+            "micInputDeviceName": ""
+          },
+          "language": {
+            "systemSourceLang": "en",
+            "systemTargetLang": "zh",
+            "micSourceLang": "zh",
+            "micTargetLang": "en"
+          },
+          "systemSegmenter": {
+            "minWordsBeforeFinalize": 10,
+            "preferredMaxChars": 140,
+            "hardMaxChars": 220,
+            "silenceForVisualFinalizeMs": 1000,
+            "allowCommaFinalize": false,
+            "allowShortPauseFinalize": false
+          },
+          "micSegmenter": {
+            "minWordsBeforeTranslate": 6,
+            "preferredMaxChars": 80,
+            "hardMaxChars": 140,
+            "silenceForTranslateMs": 800,
+            "allowCommaTranslate": false
+          },
+          "diagnostics": {
+            "logLevel": "info",
+            "diagnosticsEnabled": false,
+            "showSystemLogs": true,
+            "showMicLogs": true,
+            "showAsrLogs": true,
+            "showTranslationLogs": true,
+            "showTtsLogs": true,
+            "showErrorLogs": true
+          },
+          "logLevel": "info",
+          "diagnosticsEnabled": false,
+          "e2eAutostartSystemSubtitle": false
+        }"#;
+
+        let settings = serde_json::from_str::<AppSettings>(text).expect("legacy settings");
+
+        assert_eq!(settings.qwen_tts.output_mode, "virtual_mic_only");
+        assert_eq!(
+            settings.qwen_tts.virtual_mic_device_name,
+            "CABLE Input (VB-Audio Virtual Cable)"
+        );
+    }
 }

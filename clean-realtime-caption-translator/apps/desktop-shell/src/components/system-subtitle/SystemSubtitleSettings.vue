@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref } from 'vue';
 import { settingsStore } from '../../stores/settings/settingsStore';
 import { saveAppSettings } from '../../services/settings/settingsManager';
 import { useSystemSubtitle } from '../../hooks/system-subtitle/useSystemSubtitle';
@@ -13,7 +14,7 @@ const languageDirections = [
 ];
 
 let persistTimer: number | undefined;
-let restarting = false;
+const restarting = ref(false);
 
 async function persistSettings(): Promise<void> {
   if (!settingsStore.settings) return;
@@ -29,13 +30,13 @@ function persistSettingsSoon(): void {
 }
 
 async function changeDirection(event: Event): Promise<void> {
-  if (!settingsStore.settings || restarting) return;
+  if (!settingsStore.settings || restarting.value) return;
   const value = String((event.target as HTMLSelectElement).value);
   const direction = languageDirections.find((item) => `${item.source}->${item.target}` === value);
   if (!direction) return;
 
   const wasRunning = system.store.isRunning;
-  restarting = true;
+  restarting.value = true;
   try {
     settingsStore.settings.language.systemSourceLang = direction.source;
     settingsStore.settings.language.systemTargetLang = direction.target;
@@ -48,7 +49,7 @@ async function changeDirection(event: Event): Promise<void> {
       await system.startSystemSubtitle();
     }
   } finally {
-    restarting = false;
+    restarting.value = false;
   }
 }
 </script>

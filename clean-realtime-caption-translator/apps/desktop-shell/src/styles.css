@@ -233,6 +233,27 @@ button:disabled {
   white-space: nowrap;
 }
 
+.mic-caption-display {
+  border-top: 1px solid #e5ebf5;
+  padding-top: 14px;
+}
+
+.mic-caption-status {
+  color: #13744f;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.mic-caption-lines {
+  grid-template-rows: calc(20px * 1.32);
+  height: calc(20px * 1.32);
+}
+
+.mic-history {
+  border-top: 1px solid #e5ebf5;
+  padding-top: 14px;
+}
+
 .caption-translation {
   color: #2457d6;
   font-size: 19px;

@@ -32,6 +32,8 @@ export interface QwenTtsSettings {
   hasApiKey: boolean;
   gameTtsApiKeyConfigured: boolean;
   dashscopeApiKeyConfigured: boolean;
+  outputMode: 'preview_only' | 'virtual_mic_only' | 'preview_and_virtual_mic';
+  virtualMicDeviceName: string;
 }
 
 export interface AudioDeviceSettings {

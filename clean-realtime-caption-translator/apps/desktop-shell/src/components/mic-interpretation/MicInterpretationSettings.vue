@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref } from 'vue';
 import { settingsStore } from '../../stores/settings/settingsStore';
 import { saveAppSettings } from '../../services/settings/settingsManager';
 import { useMicInterpretation } from '../../hooks/mic-interpretation/useMicInterpretation';
@@ -12,7 +13,7 @@ const languageDirections = [
   { label: '英文 -> 中文', source: 'en', target: 'zh', asrModelDir: EN_ASR_MODEL_DIR },
 ];
 
-let restarting = false;
+const restarting = ref(false);
 
 async function persistSettings(): Promise<void> {
   if (!settingsStore.settings) return;
@@ -20,13 +21,13 @@ async function persistSettings(): Promise<void> {
 }
 
 async function changeDirection(event: Event): Promise<void> {
-  if (!settingsStore.settings || restarting) return;
+  if (!settingsStore.settings || restarting.value) return;
   const value = String((event.target as HTMLSelectElement).value);
   const direction = languageDirections.find((item) => `${item.source}->${item.target}` === value);
   if (!direction) return;
 
   const wasRunning = mic.store.isRunning;
-  restarting = true;
+  restarting.value = true;
   try {
     settingsStore.settings.language.micSourceLang = direction.source;
     settingsStore.settings.language.micTargetLang = direction.target;
@@ -39,7 +40,7 @@ async function changeDirection(event: Event): Promise<void> {
       await mic.startMicInterpretation();
     }
   } finally {
-    restarting = false;
+    restarting.value = false;
   }
 }
 </script>

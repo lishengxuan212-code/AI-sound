@@ -3,12 +3,11 @@ use crate::diagnostics::diagnostic;
 use crate::event_emitter::emit_session_event;
 use crate::settings::{load_app_settings, tts_api_key};
 use base64::Engine;
+use cpal::traits::{DeviceTrait, HostTrait};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io::BufReader;
-use std::path::PathBuf;
+use std::io::{BufReader, Cursor};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
@@ -72,7 +71,8 @@ pub struct StopTtsPlaybackRequest {
 struct SavedTtsAudio {
     tts_id: String,
     translation_item_id: String,
-    audio_path: PathBuf,
+    bytes: Vec<u8>,
+    audio_path: Option<String>,
     audio_url: Option<String>,
     file_size: u64,
     format: String,
@@ -261,7 +261,7 @@ pub async fn synthesize_qwen_tts(app: AppHandle, request: TtsInvokeRequest) -> R
         }
     };
 
-    let saved = match save_tts_audio(
+    let saved = match prepare_tts_audio(
         &request.tts_id,
         &request.translation_item_id,
         &format,
@@ -334,7 +334,7 @@ async fn play_saved_tts_audio(
     saved: SavedTtsAudio,
 ) -> Result<(), String> {
     emit_saved_status(&app, &session_id, "playing", &saved, None)?;
-    match play_tts_audio_path(saved.audio_path.clone()).await {
+    match play_tts_audio_bytes(saved.bytes.clone()).await {
         Ok(()) => {
             let mut completed = saved.clone();
             completed.completed_at = Some(now_ms());
@@ -468,7 +468,7 @@ pub fn extract_audio_reference(value: &Value) -> Option<TtsAudioReference> {
     None
 }
 
-fn save_tts_audio(
+fn prepare_tts_audio(
     tts_id: &str,
     translation_item_id: &str,
     format: &str,
@@ -478,17 +478,21 @@ fn save_tts_audio(
     created_at: u128,
     audio: TtsAudioBytes,
 ) -> Result<SavedTtsAudio, String> {
-    let path = make_tts_audio_path(tts_id, format)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    if tts_id.is_empty()
+        || tts_id
+            .chars()
+            .any(|ch| !(ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'))
+    {
+        return Err("TTS id 鏃犳晥銆?".to_string());
     }
-    fs::write(&path, &audio.bytes).map_err(|error| error.to_string())?;
+    let file_size = audio.bytes.len() as u64;
     Ok(SavedTtsAudio {
         tts_id: tts_id.to_string(),
         translation_item_id: translation_item_id.to_string(),
-        audio_path: path,
+        bytes: audio.bytes,
+        audio_path: None,
         audio_url: audio.audio_url,
-        file_size: audio.bytes.len() as u64,
+        file_size,
         format: normalize_audio_format(format),
         sample_rate,
         voice: voice.to_string(),
@@ -498,7 +502,8 @@ fn save_tts_audio(
     })
 }
 
-pub fn make_tts_audio_path(tts_id: &str, format: &str) -> Result<PathBuf, String> {
+#[allow(dead_code)]
+pub fn make_tts_audio_path(tts_id: &str, format: &str) -> Result<String, String> {
     let safe_id: String = tts_id
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
@@ -507,11 +512,7 @@ pub fn make_tts_audio_path(tts_id: &str, format: &str) -> Result<PathBuf, String
         return Err("TTS id 无效。".to_string());
     }
     let extension = normalize_audio_format(format);
-    Ok(std::env::current_dir()
-        .map_err(|error| error.to_string())?
-        .join("generated-audio")
-        .join("tts")
-        .join(format!("tts_{}_{}.{}", now_ms(), safe_id, extension)))
+    Ok(format!("tts_{}_{}.{}", now_ms(), safe_id, extension))
 }
 
 fn normalize_audio_format(format: &str) -> String {
@@ -527,28 +528,92 @@ fn normalize_audio_format(format: &str) -> String {
     }
 }
 
-async fn play_tts_audio_path(path: PathBuf) -> Result<(), String> {
+async fn play_tts_audio_bytes(bytes: Vec<u8>) -> Result<(), String> {
+    let settings = load_app_settings();
+    let route = TtsPlaybackRoute::from_settings(
+        &settings.qwen_tts.output_mode,
+        &settings.qwen_tts.virtual_mic_device_name,
+    );
     let guard = TTS_PLAYBACK_LOCK
         .get_or_init(|| AsyncMutex::new(()))
         .lock()
         .await;
-    let result = tokio::task::spawn_blocking(move || {
-        let (_stream, handle) =
-            rodio::OutputStream::try_default().map_err(|error| error.to_string())?;
-        let sink = Arc::new(rodio::Sink::try_new(&handle).map_err(|error| error.to_string())?);
-        set_current_sink(Some(sink.clone()));
-        let file = File::open(path).map_err(|error| error.to_string())?;
-        let source =
-            rodio::Decoder::new(BufReader::new(file)).map_err(|error| error.to_string())?;
-        sink.append(source);
-        sink.sleep_until_end();
-        set_current_sink(None);
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|error| error.to_string())?;
+    let result = tokio::task::spawn_blocking(move || play_tts_audio_bytes_blocking(bytes, route))
+        .await
+        .map_err(|error| error.to_string())?;
     drop(guard);
     result
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TtsPlaybackRoute {
+    PreviewOnly,
+    VirtualMicOnly { device_name: String },
+    PreviewAndVirtualMic { device_name: String },
+}
+
+impl TtsPlaybackRoute {
+    fn from_settings(output_mode: &str, virtual_mic_device_name: &str) -> Self {
+        let device_name = virtual_mic_device_name.trim().to_string();
+        match output_mode.trim() {
+            "preview_only" => Self::PreviewOnly,
+            "preview_and_virtual_mic" => Self::PreviewAndVirtualMic { device_name },
+            _ => Self::VirtualMicOnly { device_name },
+        }
+    }
+}
+
+fn play_tts_audio_bytes_blocking(bytes: Vec<u8>, route: TtsPlaybackRoute) -> Result<(), String> {
+    match route {
+        TtsPlaybackRoute::PreviewOnly => play_tts_audio_once(bytes, None),
+        TtsPlaybackRoute::VirtualMicOnly { device_name } => {
+            play_tts_audio_once(bytes, Some(device_name.as_str()))
+        }
+        TtsPlaybackRoute::PreviewAndVirtualMic { device_name } => {
+            let preview_bytes = bytes.clone();
+            let preview = std::thread::spawn(move || play_tts_audio_once(preview_bytes, None));
+            let virtual_result = play_tts_audio_once(bytes, Some(device_name.as_str()));
+            let preview_result = preview
+                .join()
+                .map_err(|_| "TTS 预览播放线程异常。".to_string())?;
+            virtual_result?;
+            preview_result
+        }
+    }
+}
+
+fn play_tts_audio_once(bytes: Vec<u8>, output_device_name: Option<&str>) -> Result<(), String> {
+    let (_stream, handle) = match output_device_name {
+        Some(name) if !name.trim().is_empty() => {
+            let device = find_output_device_by_name(name)
+                .ok_or_else(|| format!("TTS 虚拟麦输出设备未找到：{name}"))?;
+            rodio::OutputStream::try_from_device(&device).map_err(|error| error.to_string())?
+        }
+        Some(_) => return Err("TTS 虚拟麦输出设备未配置。".to_string()),
+        None => rodio::OutputStream::try_default().map_err(|error| error.to_string())?,
+    };
+    let sink = Arc::new(rodio::Sink::try_new(&handle).map_err(|error| error.to_string())?);
+    set_current_sink(Some(sink.clone()));
+    let source = rodio::Decoder::new(BufReader::new(Cursor::new(bytes)))
+        .map_err(|error| error.to_string())?;
+    sink.append(source);
+    sink.sleep_until_end();
+    set_current_sink(None);
+    Ok(())
+}
+
+fn find_output_device_by_name(configured_name: &str) -> Option<cpal::Device> {
+    let configured = configured_name.trim();
+    if configured.is_empty() {
+        return None;
+    }
+    let host = cpal::default_host();
+    host.output_devices().ok()?.find(|device| {
+        device
+            .name()
+            .ok()
+            .is_some_and(|name| name == configured || name.contains(configured))
+    })
 }
 
 fn register_saved_audio(saved: SavedTtsAudio) {
@@ -592,7 +657,6 @@ fn emit_saved_status(
     saved: &SavedTtsAudio,
     error: Option<&str>,
 ) -> Result<(), String> {
-    let audio_path = saved.audio_path.to_string_lossy().to_string();
     emit_status(
         app,
         session_id,
@@ -603,7 +667,7 @@ fn emit_saved_status(
         &saved.voice,
         &saved.format,
         saved.sample_rate,
-        Some(&audio_path),
+        saved.audio_path.as_deref(),
         saved.audio_url.as_deref(),
         Some(saved.file_size),
         saved.created_at,
@@ -689,7 +753,8 @@ fn now_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::{
-        event_name_for_tts_status, extract_audio_reference, make_tts_audio_path, TtsAudioReference,
+        event_name_for_tts_status, extract_audio_reference, prepare_tts_audio, TtsAudioBytes,
+        TtsAudioReference, TtsPlaybackRoute,
     };
 
     #[test]
@@ -727,13 +792,38 @@ mod tests {
     }
 
     #[test]
-    fn makes_timestamped_generated_audio_path() {
-        let path = make_tts_audio_path("abc-123", "wav").expect("path");
-        let text = path.to_string_lossy();
-        assert!(text.contains("generated-audio"));
-        assert!(text.contains("tts"));
-        assert!(text.contains("tts_"));
-        assert!(text.ends_with("_abc-123.wav"));
+    fn prepares_tts_audio_without_local_audio_path() {
+        let saved = prepare_tts_audio(
+            "abc-123",
+            "translation-1",
+            "mp3",
+            24_000,
+            "Cherry",
+            "qwen3-tts-flash",
+            123,
+            TtsAudioBytes {
+                bytes: vec![1, 2, 3],
+                audio_url: None,
+            },
+        )
+        .expect("saved audio");
+
+        assert_eq!(saved.file_size, 3);
+        assert_eq!(saved.bytes, vec![1, 2, 3]);
+        assert!(saved.audio_path.is_none());
+    }
+
+    #[test]
+    fn defaults_tts_playback_to_virtual_mic_route() {
+        assert_eq!(
+            TtsPlaybackRoute::from_settings(
+                "virtual_mic_only",
+                "CABLE Input (VB-Audio Virtual Cable)"
+            ),
+            TtsPlaybackRoute::VirtualMicOnly {
+                device_name: "CABLE Input (VB-Audio Virtual Cable)".to_string()
+            }
+        );
     }
 
     #[test]

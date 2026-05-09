@@ -2,7 +2,7 @@
   "localAsr": {
     "provider": "vosk",
     "wsUrl": "ws://127.0.0.1:8765/ws",
-    "modelDir": "local-asr\\models\\vosk-model-small-en-us-0.15",
+    "modelDir": "local-asr\\models\\sherpa-onnx-streaming-paraformer-bilingual-zh-en",
     "sampleRate": 16000,
     "languageMode": "bilingual",
     "enableEndpointDetection": true
@@ -26,19 +26,21 @@
     "voice": "Ethan",
     "format": "mp3",
     "sampleRate": 24000,
-    "speed": 1.0,
+    "speed": 5.0,
     "volume": 50,
     "hasApiKey": true,
     "gameTtsApiKeyConfigured": false,
-    "dashscopeApiKeyConfigured": false
+    "dashscopeApiKeyConfigured": false,
+    "outputMode": "virtual_mic_only",
+    "virtualMicDeviceName": "CABLE Input (VB-Audio Virtual Cable)"
   },
   "audioDevices": {
     "systemOutputDeviceName": "",
     "micInputDeviceName": ""
   },
   "language": {
-    "systemSourceLang": "en",
-    "systemTargetLang": "zh",
+    "systemSourceLang": "zh",
+    "systemTargetLang": "en",
     "micSourceLang": "zh",
     "micTargetLang": "en"
   },

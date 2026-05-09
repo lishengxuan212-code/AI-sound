@@ -13,6 +13,12 @@ import { logDiagnostic } from '../../services/diagnostics/diagnosticsLogger';
 
 const segmenter = createCaptionSegmenter('mic');
 
+function renderMicRawTranscript(text: string): void {
+  const next = text.trim();
+  if (!next) return;
+  micInterpretationStore.currentRawTranscript = next;
+}
+
 export function useMicInterpretation() {
   async function startMicInterpretation(): Promise<void> {
     if (!areLocalServicesReady()) {
@@ -59,17 +65,20 @@ export function useMicInterpretation() {
 
   function handleMicAsrPartial(utteranceId: string, text: string): void {
     upsertRecognition(utteranceId, text, false);
+    renderMicRawTranscript(text);
+    micInterpretationStore.currentTranslatedText = '';
     logDiagnostic('[MIC][ASR_PARTIAL]', {
       sessionKind: SessionKind.MicInterpretation,
       utteranceId,
       textLength: text.length,
-      renderPolicy: 'draft_suppressed',
+      renderPolicy: 'realtime_draft',
     });
   }
 
   function handleMicAsrFinal(utteranceId: string, text: string): void {
     const item = upsertRecognition(utteranceId, text, true);
     const result = segmenter.applyRecognition(item);
+    renderMicRawTranscript(result.openSegment?.rawText || text);
     logDiagnostic('[MIC][ASR_FINAL]', {
       sessionKind: SessionKind.MicInterpretation,
       utteranceId,
@@ -96,6 +105,14 @@ export function useMicInterpretation() {
     if (!item.translatedText) return;
     micInterpretationStore.currentRawTranscript = item.sourceText || micInterpretationStore.currentRawTranscript;
     micInterpretationStore.currentTranslatedText = item.translatedText;
+    micInterpretationStore.history.unshift({
+      recognitionItemIds: item.recognitionItemIds,
+      rawText: item.sourceText,
+      translatedText: item.translatedText,
+      ttsStatus: 'queued',
+      createdAt: item.completedAt ?? nowMs(),
+    });
+    if (micInterpretationStore.history.length > 50) micInterpretationStore.history.splice(50);
     const ttsItem: TtsItem = {
       id: createId('mic_tts'),
       sessionKind: SessionKind.MicInterpretation,
