@@ -229,8 +229,26 @@ button:disabled {
   display: block;
   min-height: calc(20px * 1.32);
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.caption-translation-lines {
+  color: #2457d6;
+  display: grid;
+  font-size: 19px;
+  grid-template-rows: repeat(3, calc(19px * 1.38));
+  height: calc(19px * 1.38 * 3);
+  line-height: 1.38;
+  overflow: hidden;
+}
+
+.caption-translation-line {
+  display: block;
+  min-height: calc(19px * 1.38);
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .mic-caption-display {
@@ -252,12 +270,6 @@ button:disabled {
 .mic-history {
   border-top: 1px solid #e5ebf5;
   padding-top: 14px;
-}
-
-.caption-translation {
-  color: #2457d6;
-  font-size: 19px;
-  line-height: 1.38;
 }
 
 .caption-empty {

@@ -2,8 +2,11 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { systemSubtitleStore } from '../../stores/system-subtitle/systemSubtitleStore';
 
-const SOURCE_LINE_CHAR_LIMIT = 64;
+const SOURCE_EN_LINE_CHAR_LIMIT = 64;
+const SOURCE_CJK_LINE_CHAR_LIMIT = 36;
 const SOURCE_MAX_LINES = 3;
+const TRANSLATION_LINE_CHAR_LIMIT = 62;
+const TRANSLATION_MAX_LINES = 3;
 const EMPTY_HOLD_MS = 700;
 
 interface CaptionLine {
@@ -13,11 +16,12 @@ interface CaptionLine {
 
 const latestGroup = computed(() => systemSubtitleStore.stableTranslatedCaptions.at(-1));
 const stableSourceText = computed(() => normalizeSource(latestGroup.value?.rawText || ''));
-const stableTranslationText = computed(() => latestGroup.value?.translatedText || '');
+const stableTranslationText = computed(() => normalizeTranslation(latestGroup.value?.translatedText || ''));
 const draftSourceText = computed(() => normalizeSource(systemSubtitleStore.currentRawCaption || ''));
 const sourceBufferText = ref('');
 const visibleSourceLines = computed(() => wrapSourceLines(sourceBufferText.value).slice(-SOURCE_MAX_LINES));
-const hasCaption = computed(() => visibleSourceLines.value.length > 0 || Boolean(stableTranslationText.value));
+const visibleTranslationLines = computed(() => wrapTextLines(stableTranslationText.value, TRANSLATION_LINE_CHAR_LIMIT).slice(-TRANSLATION_MAX_LINES));
+const hasCaption = computed(() => visibleSourceLines.value.length > 0 || visibleTranslationLines.value.length > 0);
 let emptyHoldTimer: number | undefined;
 
 watch(
@@ -56,6 +60,11 @@ function normalizeSource(value: string): string {
   return removeRepeatedWholeText(compacted);
 }
 
+function normalizeTranslation(value: string): string {
+  const compacted = value.replace(/\s+/g, ' ').trim();
+  return removeRepeatedSentenceRuns(removeRepeatedWholeText(compacted));
+}
+
 function removeRepeatedWholeText(value: string): string {
   const words = value.split(' ').filter(Boolean);
   if (words.length < 2 || words.length % 2 !== 0) return value;
@@ -66,15 +75,21 @@ function removeRepeatedWholeText(value: string): string {
 }
 
 function wrapSourceLines(text: string): CaptionLine[] {
+  return hasCjk(text)
+    ? wrapContinuousText(text.replace(/\s+/g, ''), SOURCE_CJK_LINE_CHAR_LIMIT)
+    : wrapTextLines(text, SOURCE_EN_LINE_CHAR_LIMIT);
+}
+
+function wrapTextLines(text: string, limit: number): CaptionLine[] {
   const words = text.split(' ').filter(Boolean);
-  if (words.length <= 1) return wrapContinuousText(text);
+  if (words.length <= 1) return wrapContinuousText(text, limit);
   const lines: CaptionLine[] = [];
   let line = '';
   let startWord = 0;
 
   words.forEach((word, index) => {
     const nextLine = line ? `${line} ${word}` : word;
-    if (line && nextLine.length > SOURCE_LINE_CHAR_LIMIT) {
+    if (line && nextLine.length > limit) {
       lines.push({ key: `${startWord}-${index}-${line}`, text: line });
       line = word;
       startWord = index;
@@ -89,13 +104,31 @@ function wrapSourceLines(text: string): CaptionLine[] {
   return lines;
 }
 
-function wrapContinuousText(text: string): CaptionLine[] {
+function hasCjk(text: string): boolean {
+  return /[\u3400-\u9fff]/.test(text);
+}
+
+function wrapContinuousText(text: string, limit: number): CaptionLine[] {
   const lines: CaptionLine[] = [];
-  for (let index = 0; index < text.length; index += SOURCE_LINE_CHAR_LIMIT) {
-    const line = text.slice(index, index + SOURCE_LINE_CHAR_LIMIT);
+  for (let index = 0; index < text.length; index += limit) {
+    const line = text.slice(index, index + limit);
     if (line) lines.push({ key: `${index}-${line}`, text: line });
   }
   return lines;
+}
+
+function removeRepeatedSentenceRuns(value: string): string {
+  const sentences = value.match(/[^.!?。！？]+[.!?。！？]?/g)?.map((item) => item.trim()).filter(Boolean) ?? [];
+  if (sentences.length < 2) return value;
+
+  const result: string[] = [];
+  for (const sentence of sentences) {
+    const normalized = sentence.toLowerCase();
+    const recent = result.slice(-Math.min(result.length, 8)).map((item) => item.toLowerCase());
+    if (recent.includes(normalized)) continue;
+    result.push(sentence);
+  }
+  return result.join(' ');
 }
 </script>
 
@@ -105,7 +138,9 @@ function wrapContinuousText(text: string): CaptionLine[] {
       <div class="caption-lines">
         <span v-for="line in visibleSourceLines" :key="line.key" class="caption-line">{{ line.text }}</span>
       </div>
-      <p class="caption-translation">{{ stableTranslationText }}</p>
+      <div class="caption-translation-lines">
+        <span v-for="line in visibleTranslationLines" :key="line.key" class="caption-translation-line">{{ line.text }}</span>
+      </div>
     </div>
     <div v-else class="caption-empty">
       <span class="label">双语字幕</span>
