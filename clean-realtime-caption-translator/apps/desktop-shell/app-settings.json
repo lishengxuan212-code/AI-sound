@@ -1,0 +1,73 @@
+{
+  "localAsr": {
+    "provider": "vosk",
+    "wsUrl": "ws://127.0.0.1:8765/ws",
+    "modelDir": "local-asr\\models\\vosk-model-small-en-us-0.15",
+    "sampleRate": 16000,
+    "languageMode": "bilingual",
+    "enableEndpointDetection": true
+  },
+  "localTranslation": {
+    "provider": "dashscope_openai",
+    "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    "apiKey": "sk-720ed8573679436285ee96a1554bb873",
+    "proxyUrl": "",
+    "prompt": "口语化游戏化参照场景进行翻译",
+    "modelPath": "",
+    "modelName": "qwen-mt-flash",
+    "sourceLang": "en",
+    "targetLang": "zh",
+    "timeoutMs": 15000
+  },
+  "qwenTts": {
+    "endpoint": "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+    "apiKey": "sk-00ad6c725d984131b9425e376457ef27",
+    "model": "qwen-tts-latest",
+    "voice": "Ethan",
+    "format": "mp3",
+    "sampleRate": 24000,
+    "speed": 1.0,
+    "volume": 50,
+    "hasApiKey": true,
+    "gameTtsApiKeyConfigured": false,
+    "dashscopeApiKeyConfigured": false
+  },
+  "audioDevices": {
+    "systemOutputDeviceName": "",
+    "micInputDeviceName": ""
+  },
+  "language": {
+    "systemSourceLang": "en",
+    "systemTargetLang": "zh",
+    "micSourceLang": "zh",
+    "micTargetLang": "en"
+  },
+  "systemSegmenter": {
+    "minWordsBeforeFinalize": 10,
+    "preferredMaxChars": 140,
+    "hardMaxChars": 220,
+    "silenceForVisualFinalizeMs": 1000,
+    "allowCommaFinalize": false,
+    "allowShortPauseFinalize": false
+  },
+  "micSegmenter": {
+    "minWordsBeforeTranslate": 6,
+    "preferredMaxChars": 80,
+    "hardMaxChars": 140,
+    "silenceForTranslateMs": 800,
+    "allowCommaTranslate": false
+  },
+  "diagnostics": {
+    "logLevel": "info",
+    "diagnosticsEnabled": false,
+    "showSystemLogs": true,
+    "showMicLogs": true,
+    "showAsrLogs": false,
+    "showTranslationLogs": true,
+    "showTtsLogs": true,
+    "showErrorLogs": true
+  },
+  "logLevel": "info",
+  "diagnosticsEnabled": false,
+  "e2eAutostartSystemSubtitle": false
+}

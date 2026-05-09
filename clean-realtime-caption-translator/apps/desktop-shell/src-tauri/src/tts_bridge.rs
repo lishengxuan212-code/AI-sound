@@ -96,12 +96,12 @@ struct TtsAudioBytes {
 
 pub async fn synthesize_qwen_tts(app: AppHandle, request: TtsInvokeRequest) -> Result<(), String> {
     if request.session_kind != SessionKind::MicInterpretation {
-        return Err("TTS is only allowed for MicInterpretation".to_string());
+        return Err("TTS 只能用于麦克风同声传译模块。".to_string());
     }
 
     let settings = load_app_settings();
     let session_id = "mic-tts".to_string();
-    let model = "qwen-qwen-tts-latest".to_string();
+    let model = settings.qwen_tts.model.clone();
     let voice = settings.qwen_tts.voice.clone();
     let format = normalize_audio_format(&settings.qwen_tts.format);
     let sample_rate = settings.qwen_tts.sample_rate;
@@ -125,6 +125,36 @@ pub async fn synthesize_qwen_tts(app: AppHandle, request: TtsInvokeRequest) -> R
         None,
     )?;
 
+    if settings.qwen_tts.endpoint.trim().is_empty() {
+        emit_failed(
+            &app,
+            &session_id,
+            &request,
+            &model,
+            &voice,
+            &format,
+            sample_rate,
+            created_at,
+            "TTS API 地址未填写。",
+        )?;
+        return Ok(());
+    }
+
+    if model.trim().is_empty() {
+        emit_failed(
+            &app,
+            &session_id,
+            &request,
+            &model,
+            &voice,
+            &format,
+            sample_rate,
+            created_at,
+            "TTS 模型名称未填写。",
+        )?;
+        return Ok(());
+    }
+
     let Some(api_key) = tts_api_key() else {
         emit_status(
             &app,
@@ -141,7 +171,7 @@ pub async fn synthesize_qwen_tts(app: AppHandle, request: TtsInvokeRequest) -> R
             None,
             created_at,
             Some(now_ms()),
-            Some("Qwen TTS API key missing"),
+            Some("TTS 密钥未配置。"),
         )?;
         return Ok(());
     };
@@ -169,7 +199,7 @@ pub async fn synthesize_qwen_tts(app: AppHandle, request: TtsInvokeRequest) -> R
 
     let client = reqwest::Client::new();
     let response = client
-        .post(settings.qwen_tts.endpoint)
+        .post(settings.qwen_tts.endpoint.trim())
         .bearer_auth(api_key)
         .timeout(Duration::from_secs(30))
         .json(&body)
@@ -180,7 +210,17 @@ pub async fn synthesize_qwen_tts(app: AppHandle, request: TtsInvokeRequest) -> R
         Ok(resp) if resp.status().is_success() => match read_tts_audio_bytes(&client, resp).await {
             Ok(audio) => audio,
             Err(error) => {
-                emit_failed(&app, &session_id, &request, &model, &voice, &format, sample_rate, created_at, &error)?;
+                emit_failed(
+                    &app,
+                    &session_id,
+                    &request,
+                    &model,
+                    &voice,
+                    &format,
+                    sample_rate,
+                    created_at,
+                    &error,
+                )?;
                 return Ok(());
             }
         },
@@ -188,15 +228,35 @@ pub async fn synthesize_qwen_tts(app: AppHandle, request: TtsInvokeRequest) -> R
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             let message = if body.trim().is_empty() {
-                format!("Qwen TTS HTTP {status}")
+                format!("Qwen TTS 调用失败：HTTP {status}")
             } else {
-                format!("Qwen TTS HTTP {status}: {}", body.trim())
+                format!("Qwen TTS 调用失败：HTTP {status}: {}", body.trim())
             };
-            emit_failed(&app, &session_id, &request, &model, &voice, &format, sample_rate, created_at, &message)?;
+            emit_failed(
+                &app,
+                &session_id,
+                &request,
+                &model,
+                &voice,
+                &format,
+                sample_rate,
+                created_at,
+                &message,
+            )?;
             return Ok(());
         }
         Err(error) => {
-            emit_failed(&app, &session_id, &request, &model, &voice, &format, sample_rate, created_at, &error.to_string())?;
+            emit_failed(
+                &app,
+                &session_id,
+                &request,
+                &model,
+                &voice,
+                &format,
+                sample_rate,
+                created_at,
+                &error.to_string(),
+            )?;
             return Ok(());
         }
     };
@@ -213,7 +273,17 @@ pub async fn synthesize_qwen_tts(app: AppHandle, request: TtsInvokeRequest) -> R
     ) {
         Ok(saved) => saved,
         Err(error) => {
-            emit_failed(&app, &session_id, &request, &model, &voice, &format, sample_rate, created_at, &error)?;
+            emit_failed(
+                &app,
+                &session_id,
+                &request,
+                &model,
+                &voice,
+                &format,
+                sample_rate,
+                created_at,
+                &error,
+            )?;
             return Ok(());
         }
     };
@@ -223,12 +293,19 @@ pub async fn synthesize_qwen_tts(app: AppHandle, request: TtsInvokeRequest) -> R
     play_saved_tts_audio(app, session_id, saved).await
 }
 
-pub async fn retry_tts_playback(app: AppHandle, request: RetryTtsPlaybackRequest) -> Result<(), String> {
-    let saved = find_saved_audio(&request.tts_id).ok_or_else(|| format!("TTS audio not found for {}", request.tts_id))?;
+pub async fn retry_tts_playback(
+    app: AppHandle,
+    request: RetryTtsPlaybackRequest,
+) -> Result<(), String> {
+    let saved = find_saved_audio(&request.tts_id)
+        .ok_or_else(|| format!("当前没有可重播的 TTS 音频：{}", request.tts_id))?;
     play_saved_tts_audio(app, "mic-tts".to_string(), saved).await
 }
 
-pub async fn stop_tts_playback(app: AppHandle, request: StopTtsPlaybackRequest) -> Result<(), String> {
+pub async fn stop_tts_playback(
+    app: AppHandle,
+    request: StopTtsPlaybackRequest,
+) -> Result<(), String> {
     let stopped = stop_current_sink();
     let tts_id = request.tts_id.unwrap_or_else(|| "current".to_string());
     diagnostic(
@@ -240,12 +317,22 @@ pub async fn stop_tts_playback(app: AppHandle, request: StopTtsPlaybackRequest) 
         }),
     );
     if let Some(saved) = find_saved_audio(&tts_id) {
-        emit_saved_status(&app, "mic-tts", if stopped { "failed" } else { "completed" }, &saved, Some("TTS playback stopped"))?;
+        emit_saved_status(
+            &app,
+            "mic-tts",
+            if stopped { "failed" } else { "completed" },
+            &saved,
+            Some("TTS 音频播放已停止。"),
+        )?;
     }
     Ok(())
 }
 
-async fn play_saved_tts_audio(app: AppHandle, session_id: String, saved: SavedTtsAudio) -> Result<(), String> {
+async fn play_saved_tts_audio(
+    app: AppHandle,
+    session_id: String,
+    saved: SavedTtsAudio,
+) -> Result<(), String> {
     emit_saved_status(&app, &session_id, "playing", &saved, None)?;
     match play_tts_audio_path(saved.audio_path.clone()).await {
         Ok(()) => {
@@ -288,17 +375,25 @@ fn emit_failed(
     )
 }
 
-async fn read_tts_audio_bytes(client: &reqwest::Client, response: reqwest::Response) -> Result<TtsAudioBytes, String> {
+async fn read_tts_audio_bytes(
+    client: &reqwest::Client,
+    response: reqwest::Response,
+) -> Result<TtsAudioBytes, String> {
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let bytes = response.bytes().await.map_err(|error| error.to_string())?.to_vec();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| error.to_string())?
+        .to_vec();
 
     if content_type.contains("application/json") || bytes.first() == Some(&b'{') {
-        let value: Value = serde_json::from_slice(&bytes).map_err(|error| format!("Qwen TTS JSON parse failed: {error}"))?;
+        let value: Value = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("Qwen TTS 返回格式无效：{error}"))?;
         match extract_audio_reference(&value) {
             Some(TtsAudioReference::Url(url)) => {
                 let audio_response = client
@@ -308,9 +403,16 @@ async fn read_tts_audio_bytes(client: &reqwest::Client, response: reqwest::Respo
                     .await
                     .map_err(|error| error.to_string())?;
                 if !audio_response.status().is_success() {
-                    return Err(format!("Qwen TTS audio download failed: HTTP {}", audio_response.status()));
+                    return Err(format!(
+                        "Qwen TTS 音频下载失败：HTTP {}",
+                        audio_response.status()
+                    ));
                 }
-                let bytes = audio_response.bytes().await.map(|body| body.to_vec()).map_err(|error| error.to_string())?;
+                let bytes = audio_response
+                    .bytes()
+                    .await
+                    .map(|body| body.to_vec())
+                    .map_err(|error| error.to_string())?;
                 Ok(TtsAudioBytes {
                     bytes,
                     audio_url: Some(url),
@@ -319,13 +421,19 @@ async fn read_tts_audio_bytes(client: &reqwest::Client, response: reqwest::Respo
             Some(TtsAudioReference::Base64(data)) => {
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(data)
-                    .map_err(|error| format!("Qwen TTS base64 audio decode failed: {error}"))?;
-                Ok(TtsAudioBytes { bytes, audio_url: None })
+                    .map_err(|error| format!("Qwen TTS base64 音频解码失败：{error}"))?;
+                Ok(TtsAudioBytes {
+                    bytes,
+                    audio_url: None,
+                })
             }
-            None => Err("Qwen TTS response did not contain audio data".to_string()),
+            None => Err("TTS 返回音频为空。".to_string()),
         }
     } else {
-        Ok(TtsAudioBytes { bytes, audio_url: None })
+        Ok(TtsAudioBytes {
+            bytes,
+            audio_url: None,
+        })
     }
 }
 
@@ -396,7 +504,7 @@ pub fn make_tts_audio_path(tts_id: &str, format: &str) -> Result<PathBuf, String
         .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
         .collect();
     if safe_id.is_empty() {
-        return Err("Invalid TTS id".to_string());
+        return Err("TTS id 无效。".to_string());
     }
     let extension = normalize_audio_format(format);
     Ok(std::env::current_dir()
@@ -407,7 +515,12 @@ pub fn make_tts_audio_path(tts_id: &str, format: &str) -> Result<PathBuf, String
 }
 
 fn normalize_audio_format(format: &str) -> String {
-    match format.trim().trim_start_matches('.').to_ascii_lowercase().as_str() {
+    match format
+        .trim()
+        .trim_start_matches('.')
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "mp3" => "mp3".to_string(),
         "wav" | "" => "wav".to_string(),
         other => other.to_string(),
@@ -415,13 +528,18 @@ fn normalize_audio_format(format: &str) -> String {
 }
 
 async fn play_tts_audio_path(path: PathBuf) -> Result<(), String> {
-    let guard = TTS_PLAYBACK_LOCK.get_or_init(|| AsyncMutex::new(())).lock().await;
+    let guard = TTS_PLAYBACK_LOCK
+        .get_or_init(|| AsyncMutex::new(()))
+        .lock()
+        .await;
     let result = tokio::task::spawn_blocking(move || {
-        let (_stream, handle) = rodio::OutputStream::try_default().map_err(|error| error.to_string())?;
+        let (_stream, handle) =
+            rodio::OutputStream::try_default().map_err(|error| error.to_string())?;
         let sink = Arc::new(rodio::Sink::try_new(&handle).map_err(|error| error.to_string())?);
         set_current_sink(Some(sink.clone()));
         let file = File::open(path).map_err(|error| error.to_string())?;
-        let source = rodio::Decoder::new(BufReader::new(file)).map_err(|error| error.to_string())?;
+        let source =
+            rodio::Decoder::new(BufReader::new(file)).map_err(|error| error.to_string())?;
         sink.append(source);
         sink.sleep_until_end();
         set_current_sink(None);
@@ -570,7 +688,9 @@ fn now_ms() -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use super::{event_name_for_tts_status, extract_audio_reference, make_tts_audio_path, TtsAudioReference};
+    use super::{
+        event_name_for_tts_status, extract_audio_reference, make_tts_audio_path, TtsAudioReference,
+    };
 
     #[test]
     fn extracts_dashscope_audio_url() {
@@ -584,7 +704,9 @@ mod tests {
 
         assert_eq!(
             extract_audio_reference(&value),
-            Some(TtsAudioReference::Url("https://example.local/audio.wav".to_string()))
+            Some(TtsAudioReference::Url(
+                "https://example.local/audio.wav".to_string()
+            ))
         );
     }
 

@@ -3,6 +3,8 @@ import type { TranslationItem } from '../../types/translation';
 import type { TtsItem, TtsStatus } from '../../types/tts';
 import { SessionKind } from '../../types/events';
 import { micInterpretationStore } from '../../stores/mic-interpretation/micInterpretationStore';
+import { settingsStore } from '../../stores/settings/settingsStore';
+import { areLocalServicesReady, localServicesStore } from '../../stores/services/localServicesStore';
 import { startAudioCapture, stopAudioCapture } from '../../services/audio/audioCaptureService';
 import { createCaptionSegmenter } from '../../utils/captionSegmenter';
 import { createId } from '../../utils/id';
@@ -13,12 +15,23 @@ const segmenter = createCaptionSegmenter('mic');
 
 export function useMicInterpretation() {
   async function startMicInterpretation(): Promise<void> {
-    micInterpretationStore.isRunning = true;
-    await startAudioCapture(SessionKind.MicInterpretation);
+    if (!areLocalServicesReady()) {
+      micInterpretationStore.errors.unshift(localServicesStore.message || '本地服务尚未就绪。');
+      return;
+    }
+    logDiagnostic('[MIC][START]', {});
+    try {
+      await startAudioCapture(SessionKind.MicInterpretation);
+      micInterpretationStore.isRunning = true;
+    } catch (error) {
+      micInterpretationStore.isRunning = false;
+      micInterpretationStore.errors.unshift(error instanceof Error ? error.message : String(error));
+    }
   }
 
   async function stopMicInterpretation(): Promise<void> {
     micInterpretationStore.isRunning = false;
+    logDiagnostic('[MIC][STOP]', {});
     await stopAudioCapture(SessionKind.MicInterpretation);
   }
 
@@ -29,7 +42,7 @@ export function useMicInterpretation() {
       {
         id,
         sessionKind: SessionKind.MicInterpretation,
-        provider: 'local-sherpa-onnx-realtime',
+        provider: 'local-vosk-realtime',
         rawInterimText: '',
         rawFinalText: '',
         isCompleted: false,
@@ -45,39 +58,26 @@ export function useMicInterpretation() {
   }
 
   function handleMicAsrPartial(utteranceId: string, text: string): void {
-    const item = upsertRecognition(utteranceId, text, false);
-    const result = segmenter.applyRecognition(item);
-    micInterpretationStore.currentRawTranscript = result.openSegment.rawText;
+    upsertRecognition(utteranceId, text, false);
     logDiagnostic('[MIC][ASR_PARTIAL]', {
       sessionKind: SessionKind.MicInterpretation,
       utteranceId,
       textLength: text.length,
+      renderPolicy: 'draft_suppressed',
     });
   }
 
-  function handleMicAsrFinal(utteranceId: string, text: string): TranslationItem {
+  function handleMicAsrFinal(utteranceId: string, text: string): void {
     const item = upsertRecognition(utteranceId, text, true);
     const result = segmenter.applyRecognition(item);
-    micInterpretationStore.currentRawTranscript = result.openSegment.rawText;
-    const translation: TranslationItem = {
-      id: createId('mic_translation'),
-      sessionKind: SessionKind.MicInterpretation,
-      recognitionItemIds: [item.id],
-      sourceText: item.rawFinalText,
-      translatedText: '',
-      sourceLang: 'en',
-      targetLang: 'zh',
-      status: 'pending',
-      startedAt: nowMs(),
-    };
-    micInterpretationStore.translationQueue.push(translation);
     logDiagnostic('[MIC][ASR_FINAL]', {
       sessionKind: SessionKind.MicInterpretation,
       utteranceId,
-      translationId: translation.id,
       textLength: text.length,
+      openSegmentId: result.openSegment?.id,
+      finalizeReason: result.finalizedSegment?.finalizeReason,
+      renderPolicy: 'await_translation_final',
     });
-    return translation;
   }
 
   function handleMicTranslationFinal(item: TranslationItem): void {
@@ -85,27 +85,34 @@ export function useMicInterpretation() {
     item.completedAt = nowMs();
     const existing = micInterpretationStore.translationQueue.find((queued) => queued.id === item.id);
     if (existing) Object.assign(existing, item);
+    else micInterpretationStore.translationQueue.push(item);
     if (item.error) micInterpretationStore.errors.unshift(item.error);
+    logDiagnostic(item.error ? '[MIC][TRANSLATION_ERROR]' : '[MIC][TRANSLATION_FINAL]', {
+      sessionKind: SessionKind.MicInterpretation,
+      translationId: item.id,
+      translationStatus: item.status,
+      error: item.error,
+    });
     if (!item.translatedText) return;
+    micInterpretationStore.currentRawTranscript = item.sourceText || micInterpretationStore.currentRawTranscript;
     micInterpretationStore.currentTranslatedText = item.translatedText;
     const ttsItem: TtsItem = {
       id: createId('mic_tts'),
       sessionKind: SessionKind.MicInterpretation,
       translationItemId: item.id,
       text: item.translatedText,
-      model: 'qwen-qwen-tts-latest',
-      voice: '',
-      format: 'wav',
+      model: settingsStore.settings?.qwenTts.model ?? '',
+      voice: settingsStore.settings?.qwenTts.voice ?? '',
+      format: settingsStore.settings?.qwenTts.format ?? 'wav',
       status: 'queued',
       createdAt: nowMs(),
     };
     micInterpretationStore.ttsQueue.push(ttsItem);
     micInterpretationStore.ttsStatus = 'queued';
-    logDiagnostic('[MIC][TRANSLATION]', {
+    logDiagnostic('[MIC][TTS_QUEUED]', {
       sessionKind: SessionKind.MicInterpretation,
       translationId: item.id,
       ttsId: ttsItem.id,
-      translationStatus: item.status,
     });
   }
 
@@ -119,6 +126,8 @@ export function useMicInterpretation() {
     fileSize?: number,
     sampleRate?: number,
     format?: string,
+    model?: string,
+    voice?: string,
   ): void {
     let item = micInterpretationStore.ttsQueue.find((queued) => queued.id === ttsId);
     if (!item && translationItemId) {
@@ -128,9 +137,9 @@ export function useMicInterpretation() {
         sessionKind: SessionKind.MicInterpretation,
         translationItemId,
         text: translation?.translatedText ?? '',
-        model: 'qwen-qwen-tts-latest',
-        voice: '',
-        format: 'wav',
+        model: model ?? settingsStore.settings?.qwenTts.model ?? '',
+        voice: voice ?? settingsStore.settings?.qwenTts.voice ?? '',
+        format: format ?? settingsStore.settings?.qwenTts.format ?? 'wav',
         status: 'queued',
         createdAt: nowMs(),
       };
@@ -144,14 +153,28 @@ export function useMicInterpretation() {
       item.fileSize = fileSize ?? item.fileSize;
       item.sampleRate = sampleRate ?? item.sampleRate;
       item.format = format ?? item.format;
+      item.model = model ?? item.model;
+      item.voice = voice ?? item.voice;
       if (status === 'completed' || status === 'failed') item.completedAt = nowMs();
     }
     micInterpretationStore.ttsStatus = status;
     if (error) micInterpretationStore.errors.unshift(error);
-    logDiagnostic('[MIC][TTS]', {
+    const prefix =
+      status === 'synthesizing'
+        ? '[MIC][TTS_SYNTHESIZING]'
+        : status === 'audio_saved'
+          ? '[MIC][TTS_AUDIO_SAVED]'
+          : status === 'playing'
+            ? '[MIC][TTS_PLAYING]'
+            : status === 'completed'
+              ? '[MIC][TTS_COMPLETED]'
+              : status === 'failed'
+                ? '[MIC][TTS_ERROR]'
+                : '[MIC][TTS_QUEUED]';
+    logDiagnostic(prefix, {
       sessionKind: SessionKind.MicInterpretation,
       ttsId,
-      ttsModel: 'qwen-qwen-tts-latest',
+      ttsModel: item?.model ?? settingsStore.settings?.qwenTts.model ?? '',
       ttsStatus: status,
       error,
     });

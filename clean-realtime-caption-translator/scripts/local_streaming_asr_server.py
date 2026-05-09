@@ -15,12 +15,17 @@ except ImportError as exc:  # pragma: no cover
 
 
 LOGGER = logging.getLogger("local-asr")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_EN_MODEL_DIR = PROJECT_ROOT / "local-asr" / "models" / "vosk-model-small-en-us-0.15"
+DEFAULT_ZH_MODEL_DIR = PROJECT_ROOT / "local-asr" / "models" / "sherpa-onnx-streaming-paraformer-bilingual-zh-en"
 
 
 @dataclass
 class AsrConfig:
     provider: str
     model_dir: str
+    en_model_dir: str
+    zh_model_dir: str
     host: str
     port: int
     sample_rate: float
@@ -32,14 +37,21 @@ class LocalAsrEngine:
         self.engine_name = f"local-{config.provider}-realtime"
         self._engine: Any | None = None
         self._model: Any | None = None
+        self._vosk_engine: Any | None = None
+        self._vosk_models: dict[str, Any] = {}
+        self._vosk_model_errors: dict[str, str] = {}
+        self._sherpa_engine: Any | None = None
+        self._sherpa_model: dict[str, str] | None = None
+        self._sherpa_error: str | None = None
         self._load_error: str | None = None
         self._load_engine()
 
     def _load_engine(self) -> None:
         provider = self.config.provider
         if provider == "vosk":
-            self.engine_name = "local-vosk-realtime"
+            self.engine_name = "local-vosk-sherpa-realtime"
             self._load_vosk()
+            self._load_sherpa_zh()
             return
 
         if provider == "sherpa_onnx":
@@ -54,85 +66,164 @@ class LocalAsrEngine:
         LOGGER.warning(self._load_error)
 
     def _load_vosk(self) -> None:
-        model_path = Path(self.config.model_dir)
-        if not model_path.exists():
-            self._load_error = f"Vosk model directory does not exist: {model_path}"
-            LOGGER.warning(self._load_error)
+        model_dirs = {
+            "default": self.config.model_dir,
+            "en": self.config.en_model_dir or self.config.model_dir,
+        }
+        loaded_any = False
+        for lang, model_dir in model_dirs.items():
+            model_path = Path(model_dir)
+            model = self._load_vosk_model(lang, model_path)
+            if model is not None:
+                self._vosk_models[lang] = model
+                loaded_any = True
+        if loaded_any:
+            self._model = self._vosk_models.get("en") or self._vosk_models.get("default") or next(iter(self._vosk_models.values()))
             return
+        self._load_error = "; ".join(self._vosk_model_errors.values()) or "No Vosk model is available"
+
+    def _load_vosk_model(self, lang: str, model_path: Path) -> Any | None:
+        if not model_path.exists():
+            error = f"Vosk model directory does not exist for {lang}: {model_path}"
+            self._vosk_model_errors[lang] = error
+            LOGGER.warning(error)
+            return None
 
         try:
             import vosk  # type: ignore
         except ImportError:
-            self._load_error = "vosk is not installed. Install it with: pip install vosk"
-            LOGGER.warning(self._load_error)
-            return
+            error = "vosk is not installed. Install it with: pip install vosk"
+            self._vosk_model_errors[lang] = error
+            LOGGER.warning(error)
+            return None
 
         try:
             vosk.SetLogLevel(-1)
-            self._model = vosk.Model(str(model_path))
-            self._engine = vosk
+            model = vosk.Model(str(model_path))
+            self._vosk_engine = vosk
+            if self._engine is None:
+                self._engine = vosk
             LOGGER.info(
-                "Loaded Vosk model from %s with sample_rate=%s",
+                "Loaded Vosk %s model from %s with sample_rate=%s",
+                lang,
                 model_path,
                 self.config.sample_rate,
             )
+            return model
         except Exception as exc:  # pragma: no cover - depends on native model files
-            self._load_error = f"Failed to load Vosk model from {model_path}: {exc}"
-            LOGGER.exception(self._load_error)
+            error = f"Failed to load Vosk model for {lang} from {model_path}: {exc}"
+            self._vosk_model_errors[lang] = error
+            LOGGER.exception(error)
+            return None
 
     def _probe_sherpa_onnx(self) -> None:
+        loaded = self._load_sherpa_model(self.config.model_dir, "default")
+        if loaded is None:
+            self._load_error = self._sherpa_error
+            return
+        self._sherpa_engine, self._sherpa_model = loaded
+        self._engine = self._sherpa_engine
+        self._model = self._sherpa_model
+
+    def _load_sherpa_zh(self) -> None:
+        loaded = self._load_sherpa_model(self.config.zh_model_dir, "zh")
+        if loaded is None:
+            LOGGER.warning("Chinese sherpa_onnx model unavailable: %s", self._sherpa_error)
+            return
+        self._sherpa_engine, self._sherpa_model = loaded
+        if self._engine is None:
+            self._engine = self._sherpa_engine
+        LOGGER.info("Loaded sherpa_onnx zh model from %s", self.config.zh_model_dir)
+
+    def _load_sherpa_model(self, model_dir: str, label: str) -> tuple[Any, dict[str, str]] | None:
         try:
             import sherpa_onnx  # type: ignore
         except ImportError:
-            self._load_error = "sherpa_onnx is not installed. Install it with: pip install sherpa-onnx"
-            LOGGER.warning(self._load_error)
-            return
+            self._sherpa_error = "sherpa_onnx is not installed. Install it with: pip install sherpa-onnx"
+            LOGGER.warning(self._sherpa_error)
+            return None
 
-        model_path = Path(self.config.model_dir)
+        model_path = Path(model_dir)
         if not model_path.exists():
-            self._load_error = f"sherpa_onnx model directory does not exist: {model_path}"
-            LOGGER.warning(self._load_error)
-            return
+            self._sherpa_error = f"sherpa_onnx {label} model directory does not exist: {model_path}"
+            LOGGER.warning(self._sherpa_error)
+            return None
 
-        tokens = self._sherpa_path("LOCAL_SHERPA_ONNX_TOKENS", "tokens.txt")
-        encoder = self._sherpa_path("LOCAL_SHERPA_ONNX_ENCODER", "encoder.int8.onnx", "encoder.onnx")
-        decoder = self._sherpa_path("LOCAL_SHERPA_ONNX_DECODER", "decoder.int8.onnx", "decoder.onnx")
+        tokens = self._sherpa_path(model_path, "LOCAL_SHERPA_ONNX_TOKENS", "tokens.txt")
+        encoder = self._sherpa_path(model_path, "LOCAL_SHERPA_ONNX_ENCODER", "encoder.int8.onnx", "encoder.onnx")
+        decoder = self._sherpa_path(model_path, "LOCAL_SHERPA_ONNX_DECODER", "decoder.int8.onnx", "decoder.onnx")
         missing = [str(path) for path in [tokens, encoder, decoder] if not path.is_file()]
         if missing:
             detected = sorted(item.name for item in model_path.glob("*") if item.is_file())
-            self._load_error = (
+            self._sherpa_error = (
                 "sherpa_onnx is installed, but required streaming Paraformer files are missing: "
                 f"{', '.join(missing)}. "
                 f"Detected files in {model_path}: {', '.join(detected) or '(none)'}."
             )
-            LOGGER.error(self._load_error)
-            return
+            LOGGER.error(self._sherpa_error)
+            return None
 
-        self._engine = sherpa_onnx
-        self._model = {
+        model = {
             "tokens": str(tokens),
             "encoder": str(encoder),
             "decoder": str(decoder),
         }
         LOGGER.info("Configured sherpa_onnx Paraformer with encoder=%s decoder=%s", encoder, decoder)
+        return sherpa_onnx, model
 
-    def _sherpa_path(self, env_name: str, *fallback_names: str) -> Path:
+    def _sherpa_path(self, model_path: Path, env_name: str, *fallback_names: str) -> Path:
         explicit = os.getenv(env_name)
         if explicit:
             return Path(explicit)
-        model_path = Path(self.config.model_dir)
         for name in fallback_names:
             candidate = model_path / name
             if candidate.is_file():
                 return candidate
         return model_path / fallback_names[0]
 
-    def create_session(self, utterance_id: str, sample_rate: float | None = None) -> "LocalAsrSession":
-        if self.config.provider == "vosk" and self._engine and self._model:
-            return VoskAsrSession(self, utterance_id, sample_rate or self.config.sample_rate)
-        if self.config.provider == "sherpa_onnx" and self._engine and self._model:
-            return SherpaParaformerAsrSession(self, utterance_id, sample_rate or self.config.sample_rate)
+    def create_session(self, utterance_id: str, sample_rate: float | None = None, language: str | None = None) -> "LocalAsrSession":
+        lang = normalize_lang(language or "")
+        if lang == "zh" and self._sherpa_engine and self._sherpa_model:
+            return SherpaParaformerAsrSession(
+                self,
+                utterance_id,
+                sample_rate or self.config.sample_rate,
+                self._sherpa_engine,
+                self._sherpa_model,
+            )
+        if self.config.provider == "vosk" and self._vosk_engine and self._model:
+            return VoskAsrSession(self, utterance_id, sample_rate or self.config.sample_rate, self.vosk_model_for(language))
+        if self.config.provider == "sherpa_onnx" and self._sherpa_engine and self._sherpa_model:
+            return SherpaParaformerAsrSession(
+                self,
+                utterance_id,
+                sample_rate or self.config.sample_rate,
+                self._sherpa_engine,
+                self._sherpa_model,
+            )
         return ErrorAsrSession(self, utterance_id)
+
+    def vosk_model_for(self, language: str | None) -> Any:
+        lang = normalize_lang(language or "")
+        return self._vosk_models.get(lang) or self._vosk_models.get("default") or self._model
+
+    def health_result(self) -> dict[str, Any]:
+        return {
+            "type": "health",
+            "ok": self._engine is not None and self._model is not None,
+            "provider": self.engine_name,
+            "modelDir": self.config.model_dir,
+            "modelDirs": {
+                "en": self.config.en_model_dir,
+                "zh": self.config.zh_model_dir,
+            },
+            "loadedLanguages": sorted(self._vosk_models.keys()),
+            "loadedEngines": {
+                "en": "vosk" if self._vosk_models.get("en") else None,
+                "zh": "sherpa_onnx" if self._sherpa_model else ("vosk" if self._vosk_models.get("zh") else None),
+            },
+            "error": self._load_error,
+        }
 
     def error_result(self, utterance_id: str, message: str | None = None) -> dict[str, Any]:
         return {
@@ -169,9 +260,9 @@ class ErrorAsrSession(LocalAsrSession):
 
 
 class VoskAsrSession(LocalAsrSession):
-    def __init__(self, engine: LocalAsrEngine, utterance_id: str, sample_rate: float) -> None:
+    def __init__(self, engine: LocalAsrEngine, utterance_id: str, sample_rate: float, model: Any) -> None:
         super().__init__(engine, utterance_id)
-        self._recognizer = engine._engine.KaldiRecognizer(engine._model, sample_rate)
+        self._recognizer = engine._vosk_engine.KaldiRecognizer(model, sample_rate)
         self._recognizer.SetWords(True)
         self._last_partial = ""
 
@@ -229,7 +320,7 @@ class VoskAsrSession(LocalAsrSession):
 
 
 class SherpaParaformerAsrSession(LocalAsrSession):
-    def __init__(self, engine: LocalAsrEngine, utterance_id: str, sample_rate: float) -> None:
+    def __init__(self, engine: LocalAsrEngine, utterance_id: str, sample_rate: float, sherpa_engine: Any, model: dict[str, str]) -> None:
         super().__init__(engine, utterance_id)
         try:
             import numpy as np  # type: ignore
@@ -237,9 +328,8 @@ class SherpaParaformerAsrSession(LocalAsrSession):
             raise RuntimeError("numpy is required for sherpa_onnx streaming audio input") from exc
 
         self._np = np
-        model = engine._model
         self._sample_rate = int(sample_rate)
-        self._recognizer = engine._engine.OnlineRecognizer.from_paraformer(
+        self._recognizer = sherpa_engine.OnlineRecognizer.from_paraformer(
             tokens=model["tokens"],
             encoder=model["encoder"],
             decoder=model["decoder"],
@@ -302,25 +392,39 @@ def attach_session_fields(result: dict[str, Any], session_kind: str, session_id:
     return result
 
 
+def normalize_lang(lang: str) -> str:
+    value = (lang or "").strip().lower().replace("_", "-")
+    if value in {"zh", "zh-cn", "zh-hans", "chinese"}:
+        return "zh"
+    if value in {"en", "en-us", "english"}:
+        return "en"
+    return value or "default"
+
+
 async def handle_connection(websocket: Any, engine: LocalAsrEngine) -> None:
     utterance_id = str(uuid.uuid4())
     session_kind = "SystemSubtitle"
     session_id = ""
-    asr_session = engine.create_session(utterance_id)
+    language = "default"
+    asr_session = engine.create_session(utterance_id, language=language)
     LOGGER.info("Local ASR client connected")
 
     try:
         async for message in websocket:
             if isinstance(message, str):
                 payload = json.loads(message)
+                if payload.get("type") == "health":
+                    await websocket.send(json.dumps(engine.health_result(), ensure_ascii=False))
+                    continue
                 session_kind = payload.get("sessionKind", session_kind)
                 session_id = payload.get("sessionId", session_id)
+                language = payload.get("language", language)
                 if payload.get("type") == "start":
                     sample_rate = float(payload.get("sampleRate") or engine.config.sample_rate)
                     utterance_id = str(uuid.uuid4())
-                    asr_session = engine.create_session(utterance_id, sample_rate)
-                if payload.get("language") or payload.get("prompt"):
-                    LOGGER.info("language/prompt received but may be ignored by local ASR engine")
+                    asr_session = engine.create_session(utterance_id, sample_rate, language)
+                if payload.get("prompt"):
+                    LOGGER.info("prompt received but may be ignored by local ASR engine")
                 continue
 
             result = await asr_session.accept_audio(message)
@@ -343,13 +447,21 @@ async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default=os.getenv("LOCAL_ASR_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("LOCAL_ASR_PORT", "8765")))
-    parser.add_argument("--provider", default=os.getenv("LOCAL_ASR_PROVIDER", "sherpa_onnx"))
+    parser.add_argument("--provider", default=os.getenv("LOCAL_ASR_PROVIDER", "vosk"))
     parser.add_argument(
         "--model-dir",
         default=os.getenv(
             "LOCAL_ASR_MODEL_DIR",
-            "local-asr/models/sherpa-onnx-streaming-paraformer-bilingual-zh-en",
+            str(DEFAULT_EN_MODEL_DIR),
         ),
+    )
+    parser.add_argument(
+        "--en-model-dir",
+        default=os.getenv("LOCAL_ASR_MODEL_DIR_EN", str(DEFAULT_EN_MODEL_DIR)),
+    )
+    parser.add_argument(
+        "--zh-model-dir",
+        default=os.getenv("LOCAL_ASR_MODEL_DIR_ZH", str(DEFAULT_ZH_MODEL_DIR)),
     )
     parser.add_argument("--sample-rate", type=float, default=float(os.getenv("LOCAL_ASR_SAMPLE_RATE", "16000")))
     args = parser.parse_args()
@@ -358,6 +470,8 @@ async def main() -> None:
     config = AsrConfig(
         provider=args.provider,
         model_dir=args.model_dir,
+        en_model_dir=args.en_model_dir,
+        zh_model_dir=args.zh_model_dir,
         host=args.host,
         port=args.port,
         sample_rate=args.sample_rate,
@@ -367,6 +481,8 @@ async def main() -> None:
     LOGGER.info("Starting local ASR WebSocket server at ws://%s:%s/ws", config.host, config.port)
     LOGGER.info("Provider: %s", config.provider)
     LOGGER.info("Model directory: %s", config.model_dir)
+    LOGGER.info("English model directory: %s", config.en_model_dir)
+    LOGGER.info("Chinese model directory: %s", config.zh_model_dir)
     LOGGER.info("Sample rate: %s Hz PCM 16-bit little-endian mono expected", config.sample_rate)
     LOGGER.info("No cloud ASR fallback is configured")
     async with websockets.serve(lambda ws: handle_connection(ws, engine), config.host, config.port):

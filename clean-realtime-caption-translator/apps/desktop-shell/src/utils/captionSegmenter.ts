@@ -32,7 +32,7 @@ const micConfig: SegmenterConfig = {
 };
 
 export interface SegmenterResult {
-  openSegment: OpenVisualCaptionSegment;
+  openSegment?: OpenVisualCaptionSegment;
   finalizedSegment?: FinalizedCaptionSegment;
 }
 
@@ -96,8 +96,7 @@ export function createCaptionSegmenter(kind: SegmenterKind): CaptionSegmenter {
         segment.recognitionItemIds.push(item.id);
       }
       const text = item.rawFinalText || item.rawInterimText;
-      const previousItemsText = segment.rawText && !segment.rawText.includes(text) ? `${segment.rawText} ${text}` : text;
-      segment.rawText = compactText(previousItemsText);
+      segment.rawText = mergeSegmentText(segment.rawText, text);
       segment.updatedAt = item.updatedAt;
       if (item.isCompleted) segment.lastCompletedAt = item.updatedAt;
 
@@ -112,4 +111,16 @@ export function createCaptionSegmenter(kind: SegmenterKind): CaptionSegmenter {
       return openSegment;
     },
   };
+}
+
+export function mergeSegmentText(current: string, next: string): string {
+  const normalizedCurrent = compactText(current);
+  const normalizedNext = compactText(next);
+  if (!normalizedCurrent) return normalizedNext;
+  if (!normalizedNext || normalizedCurrent === normalizedNext) return normalizedCurrent;
+  if (normalizedNext.startsWith(normalizedCurrent)) return normalizedNext;
+  if (normalizedCurrent.endsWith(normalizedNext) || normalizedCurrent.includes(normalizedNext)) {
+    return normalizedCurrent;
+  }
+  return compactText(`${normalizedCurrent} ${normalizedNext}`);
 }

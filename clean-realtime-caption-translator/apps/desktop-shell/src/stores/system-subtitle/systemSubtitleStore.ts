@@ -11,6 +11,7 @@ export interface SystemSubtitleStore {
   openVisualSegment?: OpenVisualCaptionSegment;
   recognitionItems: Record<string, RecognitionItem>;
   finalizedCaptions: FinalizedCaptionSegment[];
+  stableTranslatedCaptions: FinalizedCaptionSegment[];
   translationQueue: TranslationItem[];
   errors: string[];
   diagnostics: string[];
@@ -23,6 +24,7 @@ export const systemSubtitleStore = reactive<SystemSubtitleStore>({
   currentTranslatedCaption: '',
   recognitionItems: {},
   finalizedCaptions: [],
+  stableTranslatedCaptions: [],
   translationQueue: [],
   errors: [],
   diagnostics: [],

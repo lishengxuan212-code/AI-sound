@@ -7,6 +7,7 @@ import StatusBadge from '../shared/StatusBadge.vue';
 import AudioLevelMeter from '../shared/AudioLevelMeter.vue';
 import ErrorBanner from '../shared/ErrorBanner.vue';
 import { useMicInterpretation } from '../../hooks/mic-interpretation/useMicInterpretation';
+import { areLocalServicesReady, localServicesStore } from '../../stores/services/localServicesStore';
 
 const mic = useMicInterpretation();
 </script>
@@ -15,22 +16,23 @@ const mic = useMicInterpretation();
   <article class="panel">
     <header class="panel-header">
       <div>
-        <h2>Mic Interpretation</h2>
-        <p>Microphone ASR, local translation, Qwen TTS playback.</p>
+        <h2>麦克风同声传译</h2>
       </div>
-      <StatusBadge :label="mic.store.isRunning ? 'Running' : 'Idle'" :tone="mic.store.isRunning ? 'running' : 'idle'" />
+      <StatusBadge :label="mic.store.isRunning ? '运行中' : '已停止'" :tone="mic.store.isRunning ? 'running' : 'idle'" />
     </header>
 
+    <p class="metric-label">本地服务：{{ localServicesStore.message }}</p>
     <div class="panel-actions">
-      <button type="button" @click="mic.startMicInterpretation">Start</button>
-      <button type="button" class="secondary" @click="mic.stopMicInterpretation">Stop</button>
+      <button type="button" :disabled="!areLocalServicesReady() || mic.store.isRunning" @click="mic.startMicInterpretation">启动</button>
+      <button type="button" class="secondary" :disabled="!mic.store.isRunning" @click="mic.stopMicInterpretation">停止</button>
     </div>
 
+    <p class="metric-label">麦克风音频电平</p>
     <AudioLevelMeter :value="mic.store.audioLevel" />
     <ErrorBanner v-if="mic.store.errors[0]" :message="mic.store.errors[0]" />
+    <MicInterpretationSettings />
     <MicTranscriptDisplay />
     <MicTranslationDisplay />
     <MicTtsStatus />
-    <MicInterpretationSettings />
   </article>
 </template>

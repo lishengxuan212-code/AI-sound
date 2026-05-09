@@ -21,7 +21,7 @@ export class LocalAsrClient {
       const payload = JSON.parse(String(message.data)) as LocalAsrEvent;
       this.options.onEvent({ ...payload, sessionKind: this.options.sessionKind });
     };
-    this.socket.onerror = () => this.options.onError(new Error('Local ASR WebSocket error'));
+    this.socket.onerror = () => this.options.onError(new Error('本地 ASR 连接失败，请检查 ws://127.0.0.1:8765/ws。'));
     this.socket.onopen = () => {
       this.socket?.send(
         JSON.stringify({

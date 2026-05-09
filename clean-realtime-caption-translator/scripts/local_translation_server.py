@@ -77,10 +77,84 @@ class TransformersSeq2SeqProvider:
         return translated.strip(), None
 
 
-def create_provider(provider_name: str, model_path: str, model_name: str) -> TranslationProvider:
+class DirectionAwareTransformersProvider:
+    def __init__(self, model_path: str, model_name: str, source_lang: str, target_lang: str) -> None:
+        self.default_model_path = model_path
+        self.default_model_name = model_name
+        self.default_source_lang = normalize_lang(source_lang)
+        self.default_target_lang = normalize_lang(target_lang)
+        self._providers: dict[tuple[str, str], TransformersSeq2SeqProvider] = {}
+
+    @property
+    def model_loaded(self) -> bool:
+        if not self._providers:
+            provider = self._provider_for(self.default_source_lang, self.default_target_lang)
+            return bool(getattr(provider, "model_loaded", False))
+        return any(getattr(provider, "model_loaded", False) for provider in self._providers.values())
+
+    def translate(self, source_text: str, source_lang: str, target_lang: str) -> tuple[str, str | None]:
+        source = normalize_lang(source_lang)
+        target = normalize_lang(target_lang)
+        if source == target:
+            return source_text.strip(), None
+        provider = self._provider_for(source, target)
+        return provider.translate(source_text, source, target)
+
+    def _provider_for(self, source_lang: str, target_lang: str) -> TransformersSeq2SeqProvider:
+        key = (source_lang, target_lang)
+        if key not in self._providers:
+            model_path, model_name = self._resolve_model_ref(source_lang, target_lang)
+            self._providers[key] = TransformersSeq2SeqProvider(model_path, model_name)
+        return self._providers[key]
+
+    def _resolve_model_ref(self, source_lang: str, target_lang: str) -> tuple[str, str]:
+        env_suffix = f"{source_lang}_{target_lang}".upper().replace("-", "_")
+        path_from_env = os.getenv(f"LOCAL_TRANSLATION_MODEL_PATH_{env_suffix}", "").strip()
+        name_from_env = os.getenv(f"LOCAL_TRANSLATION_MODEL_NAME_{env_suffix}", "").strip()
+        if path_from_env or name_from_env:
+            return path_from_env, name_from_env
+
+        if source_lang == self.default_source_lang and target_lang == self.default_target_lang:
+            return self.default_model_path, self.default_model_name
+
+        for candidate in local_direction_model_candidates(self.default_model_path, source_lang, target_lang):
+            if candidate.exists():
+                return str(candidate), ""
+
+        return "", ""
+
+
+def normalize_lang(lang: str) -> str:
+    value = (lang or "").strip().lower().replace("_", "-")
+    if value in {"zh", "zh-cn", "zh-hans", "chinese"}:
+        return "zh"
+    if value in {"en", "en-us", "english"}:
+        return "en"
+    return value or "unknown"
+
+
+def local_direction_model_candidates(model_path: str, source_lang: str, target_lang: str) -> list[Path]:
+    names = [
+        f"opus-mt-{source_lang}-{target_lang}",
+        f"Helsinki-NLP-opus-mt-{source_lang}-{target_lang}",
+        f"{source_lang}-{target_lang}",
+    ]
+    roots: list[Path] = []
+    if model_path:
+        path = Path(model_path)
+        roots.append(path.parent if path.name else path)
+    roots.append(Path("local-translation") / "models")
+    candidates: list[Path] = []
+    for root in roots:
+        for name in names:
+            candidates.append(root / name)
+    return candidates
+
+
+def create_provider(provider_name: str, model_path: str, model_name: str, source_lang: str, target_lang: str) -> TranslationProvider:
     provider = (provider_name or "transformers_seq2seq").strip().lower()
     if provider in {"transformers_seq2seq", "huggingface_seq2seq", "hf_seq2seq"}:
-        return TransformersSeq2SeqProvider(model_path, model_name)
+        return DirectionAwareTransformersProvider(model_path, model_name, source_lang, target_lang)
     return UnavailableTranslationProvider(f"{MODEL_UNAVAILABLE}: unsupported provider {provider_name}")
 
 
@@ -170,7 +244,13 @@ def main() -> None:
     TranslationHandler.provider_name = args.provider
     TranslationHandler.source_lang = args.source_lang
     TranslationHandler.target_lang = args.target_lang
-    TranslationHandler.provider = create_provider(args.provider, args.model_path, args.model_name)
+    TranslationHandler.provider = create_provider(
+        args.provider,
+        args.model_path,
+        args.model_name,
+        args.source_lang,
+        args.target_lang,
+    )
 
     server = ThreadingHTTPServer((args.host, args.port), TranslationHandler)
     LOGGER.info("Starting local translation server at http://%s:%s/translate", args.host, args.port)

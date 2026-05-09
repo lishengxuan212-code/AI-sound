@@ -7,7 +7,7 @@ export interface TtsItem {
   sessionKind: SessionKind.MicInterpretation;
   translationItemId: string;
   text: string;
-  model: 'qwen-qwen-tts-latest';
+  model: string;
   voice: string;
   format: string;
   sampleRate?: number;

@@ -4,6 +4,8 @@ export enum SessionKind {
 }
 
 export type SessionEventType =
+  | 'system_asr_partial'
+  | 'system_asr_final'
   | 'system_subtitle_partial'
   | 'system_subtitle_final'
   | 'system_translation_status'

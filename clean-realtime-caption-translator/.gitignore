@@ -15,6 +15,10 @@ venv/
 local-secrets.*
 logs/
 logs/*.log
+!apps/desktop-shell/src/components/logs/
+!apps/desktop-shell/src/components/logs/**
+!apps/desktop-shell/src/stores/logs/
+!apps/desktop-shell/src/stores/logs/**
 tmp/
 temp/
 .cache/

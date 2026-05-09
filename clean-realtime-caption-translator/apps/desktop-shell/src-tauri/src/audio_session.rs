@@ -34,7 +34,10 @@ impl SessionRegistry {
             is_running: true,
             running: Arc::new(AtomicBool::new(true)),
         };
-        self.sessions.lock().await.insert(session_kind, session.clone());
+        self.sessions
+            .lock()
+            .await
+            .insert(session_kind, session.clone());
         session
     }
 
